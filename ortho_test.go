@@ -133,14 +133,28 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 	defer svc.Close()
 
 	catalog := svc.WMSCatalog()
-	if len(catalog) != 4 {
-		t.Fatalf("builtin sources %d, want 4", len(catalog))
+	if len(catalog) != len(BuiltinWMSSources()) {
+		t.Fatalf("builtin sources %d, want %d", len(catalog), len(BuiltinWMSSources()))
 	}
-	names := make([]string, len(catalog))
-	for i, src := range catalog {
-		names[i] = src.Name
+	seen := make(map[string]bool)
+	prev := ""
+	for _, src := range catalog {
+		if src.Name == "" || src.BaseURL == "" || src.Layers == "" ||
+			src.GSD <= 0 || src.Attribution == "" || src.MaxPx <= 0 {
+			t.Errorf("incomplete source %+v", src)
+		}
+		if seen[src.Name] {
+			t.Errorf("duplicate source name %q", src.Name)
+		}
+		seen[src.Name] = true
+		if src.Name < prev {
+			t.Errorf("catalog not sorted: %q after %q", src.Name, prev)
+		}
+		prev = src.Name
 	}
-	if strings.Join(names, ",") != "nl,nl-25,pl,pl-hires" {
-		t.Errorf("catalog order %v", names)
+	for _, want := range []string{"pl", "nl", "fr", "ch", "es", "us"} {
+		if !seen[want] {
+			t.Errorf("missing builtin source %q", want)
+		}
 	}
 }

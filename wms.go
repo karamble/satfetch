@@ -19,9 +19,9 @@ type WMSSource struct {
 	Attribution string
 }
 
-// BuiltinWMSSources returns the bundled, verified orthophoto sources.
-// Orthophotos are flown on multi-year cycles; requests outside a source's
-// national coverage come back blank.
+// BuiltinWMSSources returns the bundled orthophoto sources, each verified
+// with a live keyless GetMap fetch. Orthophotos are flown on multi-year
+// cycles; requests outside a source's coverage come back blank.
 func BuiltinWMSSources() []WMSSource {
 	return []WMSSource{
 		{
@@ -51,6 +51,76 @@ func BuiltinWMSSources() []WMSSource {
 			Layers:      "Actueel_ortho25",
 			GSD:         0.25,
 			Attribution: "Beeldmateriaal Nederland via PDOK, CC BY 4.0",
+		},
+		{
+			Name:        "fr",
+			BaseURL:     "https://data.geopf.fr/wms-r",
+			Layers:      "ORTHOIMAGERY.ORTHOPHOTOS",
+			GSD:         0.2,
+			Attribution: "IGN France, Geoplateforme",
+		},
+		{
+			Name:        "ch",
+			BaseURL:     "https://wms.geo.admin.ch/",
+			Layers:      "ch.swisstopo.swissimage",
+			GSD:         0.1,
+			Attribution: "swisstopo, SWISSIMAGE",
+		},
+		{
+			Name:        "es",
+			BaseURL:     "https://www.ign.es/wms-inspire/pnoa-ma",
+			Layers:      "OI.OrthoimageCoverage",
+			GSD:         0.25,
+			Attribution: "IGN Spain, PNOA, CC BY 4.0",
+		},
+		{
+			Name:        "de-nrw",
+			BaseURL:     "https://www.wms.nrw.de/geobasis/wms_nw_dop",
+			Layers:      "nw_dop_rgb",
+			GSD:         0.1,
+			Attribution: "Geobasis NRW, dl-zero-de/2.0",
+		},
+		{
+			Name:        "de-by",
+			BaseURL:     "https://geoservices.bayern.de/od/wms/dop/v1/dop40",
+			Layers:      "by_dop40c",
+			GSD:         0.4,
+			Attribution: "Bayerische Vermessungsverwaltung, CC BY 4.0",
+		},
+		{
+			Name:        "be-vl",
+			BaseURL:     "https://geo.api.vlaanderen.be/omw/wms",
+			Layers:      "OMWRGB25VL",
+			GSD:         0.25,
+			Attribution: "Digitaal Vlaanderen",
+		},
+		{
+			Name:        "lu",
+			BaseURL:     "https://wms.geoportail.lu/opendata/service",
+			Layers:      "Ortho",
+			GSD:         0.2,
+			Attribution: "geoportail.lu, Administration du cadastre et de la topographie",
+		},
+		{
+			Name:        "sk",
+			BaseURL:     "https://zbgisws.skgeodesy.sk/zbgis_ortofoto_wms/service.svc/get",
+			Layers:      "1",
+			GSD:         0.2,
+			Attribution: "GKU Bratislava, ortofotomozaika SR",
+		},
+		{
+			Name:        "pt",
+			BaseURL:     "https://ortos.dgterritorio.gov.pt/wms/ortosat2023",
+			Layers:      "ortoSat2023-CorVerdadeira",
+			GSD:         0.3,
+			Attribution: "DGT Portugal, OrtoSat 2023",
+		},
+		{
+			Name:        "us",
+			BaseURL:     "https://basemap.nationalmap.gov/arcgis/services/USGSImageryOnly/MapServer/WmsServer",
+			Layers:      "0",
+			GSD:         0.6,
+			Attribution: "USGS The National Map, public domain",
 		},
 	}
 }
