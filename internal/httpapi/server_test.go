@@ -128,13 +128,14 @@ func fixtureScene(t *testing.T) satfetch.Scene {
 	}
 }
 
-func newAPI(t *testing.T, cat satfetch.Catalog) *httptest.Server {
+func newAPI(t *testing.T, cat satfetch.Catalog, wmsSources ...satfetch.WMSSource) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc, err := satfetch.New(satfetch.Options{
-		Catalog:  cat,
-		CacheDir: t.TempDir(),
-		Logger:   log,
+		Catalog:    cat,
+		CacheDir:   t.TempDir(),
+		Logger:     log,
+		WMSSources: wmsSources,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +144,17 @@ func newAPI(t *testing.T, cat satfetch.Catalog) *httptest.Server {
 	ts := httptest.NewServer(httpapi.New(svc, log))
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+// fixtureWMS serves a fixed JPEG payload for any GetMap request.
+func fixtureWMS(t *testing.T, payload []byte) satfetch.WMSSource {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(payload)
+	}))
+	t.Cleanup(ts.Close)
+	return satfetch.WMSSource{Name: "test", BaseURL: ts.URL, Layers: "L", GSD: 0.25, Attribution: "test data"}
 }
 
 func get(t *testing.T, url string) (*http.Response, []byte) {
@@ -288,6 +300,93 @@ func TestNDVIGTiff(t *testing.T) {
 		if v := ras.F32[idx]; v != 0.5 {
 			t.Errorf("ndvi[%d] = %f, want 0.5", idx, v)
 		}
+	}
+}
+
+func TestOrtho(t *testing.T) {
+	payload := []byte("FAKEJPEGBYTES")
+	ts := newAPI(t, &fakeCatalog{}, fixtureWMS(t, payload))
+
+	url := fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=test&size_km=0.5&px=256", ts.URL, testLat, testLon)
+	resp, body := get(t, url)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("content type %s", ct)
+	}
+	if resp.Header.Get("X-Source") != "test" {
+		t.Errorf("X-Source %q", resp.Header.Get("X-Source"))
+	}
+	if resp.Header.Get("X-Source-GSD") != "0.25" {
+		t.Errorf("X-Source-GSD %q", resp.Header.Get("X-Source-GSD"))
+	}
+	if resp.Header.Get("X-Scene-ID") != "" {
+		t.Errorf("unexpected scene header %q", resp.Header.Get("X-Scene-ID"))
+	}
+	if resp.Header.Get("X-Cache") != "MISS" {
+		t.Errorf("X-Cache %q", resp.Header.Get("X-Cache"))
+	}
+	if !bytes.Equal(body, payload) {
+		t.Error("body differs from the WMS payload")
+	}
+
+	resp, _ = get(t, url)
+	if resp.Header.Get("X-Cache") != "HIT" {
+		t.Errorf("second call X-Cache %q", resp.Header.Get("X-Cache"))
+	}
+
+	_, body = get(t, ts.URL+"/metrics")
+	if !strings.Contains(string(body), "satfetch_upstream_bytes_total 13") {
+		t.Errorf("metrics missing upstream bytes:\n%s", body)
+	}
+}
+
+func TestOrthoValidation(t *testing.T) {
+	ts := newAPI(t, &fakeCatalog{}, fixtureWMS(t, []byte("X")))
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"missing source", fmt.Sprintf("%s/ortho?lat=%f&lon=%f", ts.URL, testLat, testLon)},
+		{"unknown source", fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=xx", ts.URL, testLat, testLon)},
+		{"bad px", fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=test&px=9999", ts.URL, testLat, testLon)},
+		{"bad size", fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=test&size_km=50", ts.URL, testLat, testLon)},
+		{"gtiff format", fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=test&format=gtiff", ts.URL, testLat, testLon)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, body := get(t, tc.url)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status %d, want 400 (%s)", resp.StatusCode, body)
+			}
+		})
+	}
+	resp, body := get(t, fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=xx", ts.URL, testLat, testLon))
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "available: test") {
+		t.Errorf("unknown source response %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestSources(t *testing.T) {
+	ts := newAPI(t, &fakeCatalog{}, fixtureWMS(t, []byte("X")))
+	resp, body := get(t, ts.URL+"/sources")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var out struct {
+		Sources []struct {
+			Name        string  `json:"name"`
+			GSD         float64 `json:"gsd"`
+			Attribution string  `json:"attribution"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Sources) != 1 || out.Sources[0].Name != "test" ||
+		out.Sources[0].GSD != 0.25 || out.Sources[0].Attribution != "test data" {
+		t.Errorf("sources %+v", out.Sources)
 	}
 }
 

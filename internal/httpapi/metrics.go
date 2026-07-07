@@ -13,13 +13,13 @@ import (
 )
 
 type metrics struct {
-	mu         sync.Mutex
-	requests   map[string]uint64 // "endpoint|status"
-	cacheHits  uint64
-	buildSum   float64
-	buildCount uint64
-	stacErrors uint64
-	cogBytes   int64
+	mu            sync.Mutex
+	requests      map[string]uint64 // "endpoint|status"
+	cacheHits     uint64
+	buildSum      float64
+	buildCount    uint64
+	stacErrors    uint64
+	upstreamBytes int64
 }
 
 func newMetrics() *metrics {
@@ -42,7 +42,7 @@ func (m *metrics) build(seconds float64, fetchedBytes int64) {
 	m.mu.Lock()
 	m.buildSum += seconds
 	m.buildCount++
-	m.cogBytes += fetchedBytes
+	m.upstreamBytes += fetchedBytes
 	m.mu.Unlock()
 }
 
@@ -70,5 +70,5 @@ func (m *metrics) serve(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "satfetch_build_seconds_sum %g\n", m.buildSum)
 	fmt.Fprintf(w, "satfetch_build_seconds_count %d\n", m.buildCount)
 	fmt.Fprintf(w, "satfetch_stac_errors_total %d\n", m.stacErrors)
-	fmt.Fprintf(w, "satfetch_cog_fetch_bytes_total %d\n", m.cogBytes)
+	fmt.Fprintf(w, "satfetch_upstream_bytes_total %d\n", m.upstreamBytes)
 }

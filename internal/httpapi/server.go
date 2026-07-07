@@ -37,7 +37,9 @@ func New(svc *satfetch.Service, log *slog.Logger) *Server {
 	s := &Server{svc: svc, log: log, m: newMetrics(), mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /image", s.endpoint("image", s.handleImage))
 	s.mux.HandleFunc("GET /ndvi", s.endpoint("ndvi", s.handleNDVI))
+	s.mux.HandleFunc("GET /ortho", s.endpoint("ortho", s.handleOrtho))
 	s.mux.HandleFunc("GET /scenes", s.endpoint("scenes", s.handleScenes))
+	s.mux.HandleFunc("GET /sources", s.endpoint("sources", s.handleSources))
 	s.mux.HandleFunc("GET /healthz", s.endpoint("healthz", s.handleHealthz))
 	s.mux.HandleFunc("GET /metrics", s.m.serve)
 	return s
@@ -196,6 +198,10 @@ func (s *Server) serveProduct(w http.ResponseWriter, r *http.Request, req satfet
 		s.writeProductError(w, err)
 		return
 	}
+	s.serveResult(w, r, res, start)
+}
+
+func (s *Server) serveResult(w http.ResponseWriter, r *http.Request, res *satfetch.Result, start time.Time) {
 	if res.CacheHit {
 		s.m.cacheHit()
 	} else {
@@ -213,15 +219,66 @@ func (s *Server) serveProduct(w http.ResponseWriter, r *http.Request, req satfet
 		return
 	}
 	w.Header().Set("Content-Type", res.ContentType)
-	w.Header().Set("X-Scene-ID", res.Scene.ID)
-	w.Header().Set("X-Scene-Datetime", res.Scene.Datetime.UTC().Format(time.RFC3339))
-	w.Header().Set("X-Scene-Cloud-Cover", fmt.Sprintf("%.1f", res.Scene.CloudCover))
+	if res.Scene.ID != "" {
+		w.Header().Set("X-Scene-ID", res.Scene.ID)
+		w.Header().Set("X-Scene-Datetime", res.Scene.Datetime.UTC().Format(time.RFC3339))
+		w.Header().Set("X-Scene-Cloud-Cover", fmt.Sprintf("%.1f", res.Scene.CloudCover))
+	}
+	if res.Source != "" {
+		w.Header().Set("X-Source", res.Source)
+		if res.SourceGSD > 0 {
+			w.Header().Set("X-Source-GSD", fmt.Sprintf("%g", res.SourceGSD))
+		}
+	}
 	if res.CacheHit {
 		w.Header().Set("X-Cache", "HIT")
 	} else {
 		w.Header().Set("X-Cache", "MISS")
 	}
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+func (s *Server) handleOrtho(w http.ResponseWriter, r *http.Request) {
+	p := &params{q: r.URL.Query()}
+	req := satfetch.OrthoRequest{
+		Lat:    p.requiredFloat("lat", -90, 90),
+		Lon:    p.requiredFloat("lon", -180, 180),
+		SizeKM: p.float("size_km", 1, 0.1, 10),
+		Px:     p.integer("px", 1024, 64, 4096),
+		Source: p.q.Get("source"),
+		Format: satfetch.Format(p.q.Get("format")),
+	}
+	if p.err != nil {
+		writeError(w, http.StatusBadRequest, p.err.Error())
+		return
+	}
+	start := time.Now()
+	res, err := s.svc.Ortho(r.Context(), req)
+	if err != nil {
+		s.writeProductError(w, err)
+		return
+	}
+	s.serveResult(w, r, res, start)
+}
+
+type sourceJSON struct {
+	Name        string  `json:"name"`
+	GSD         float64 `json:"gsd"`
+	Attribution string  `json:"attribution,omitempty"`
+}
+
+func (s *Server) handleSources(w http.ResponseWriter, _ *http.Request) {
+	catalog := s.svc.WMSCatalog()
+	out := struct {
+		Sources []sourceJSON `json:"sources"`
+	}{Sources: make([]sourceJSON, 0, len(catalog))}
+	for _, src := range catalog {
+		out.Sources = append(out.Sources, sourceJSON{
+			Name: src.Name, GSD: src.GSD, Attribution: src.Attribution,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
 }
 
 // writeProductError maps service errors to API statuses. Upstream detail

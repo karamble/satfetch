@@ -19,6 +19,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"github.com/karamble/satfetch/internal/geo"
 	"github.com/karamble/satfetch/internal/render"
 	"github.com/karamble/satfetch/internal/tiffw"
+	"github.com/karamble/satfetch/internal/wms"
 )
 
 // Options configures a Service. Catalog and CacheDir are required.
@@ -39,13 +42,16 @@ type Options struct {
 	TileConcurrency     int           // parallel range requests per build, default 4
 	HTTPClient          *http.Client  // pixel-data fetches
 	Logger              *slog.Logger
+	WMSSources          []WMSSource // ortho sources; nil means BuiltinWMSSources()
 }
 
 // Result describes a finished product sitting in the cache.
 type Result struct {
 	Path          string
 	ContentType   string
-	Scene         Scene
+	Scene         Scene   // zero for ortho products
+	Source        string  // WMS source name, empty for scene products
+	SourceGSD     float64 // native meters per pixel of the source, 0 when n/a
 	CacheHit      bool
 	Width, Height int   // 0 when unknown (GeoTIFF cache hits)
 	BytesFetched  int64 // upstream bytes pulled for this call
@@ -60,6 +66,8 @@ type Service struct {
 	timeout  time.Duration
 	tileConc int
 	sem      chan struct{}
+	wms      map[string]WMSSource
+	wmsNames []string
 
 	mu     sync.Mutex
 	flight map[string]chan struct{}
@@ -92,6 +100,22 @@ func New(o Options) (*Service, error) {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
+	if o.WMSSources == nil {
+		o.WMSSources = BuiltinWMSSources()
+	}
+	wmsMap := make(map[string]WMSSource, len(o.WMSSources))
+	wmsNames := make([]string, 0, len(o.WMSSources))
+	for _, src := range o.WMSSources {
+		if src.Name == "" || src.BaseURL == "" {
+			return nil, fmt.Errorf("satfetch: WMS source needs a name and base URL")
+		}
+		if src.MaxPx <= 0 {
+			src.MaxPx = 4096
+		}
+		wmsMap[src.Name] = src
+		wmsNames = append(wmsNames, src.Name)
+	}
+	sort.Strings(wmsNames)
 	c, err := cache.New(o.CacheDir, o.CacheMaxMB, o.Logger)
 	if err != nil {
 		return nil, err
@@ -104,8 +128,19 @@ func New(o Options) (*Service, error) {
 		timeout:  o.BuildTimeout,
 		tileConc: o.TileConcurrency,
 		sem:      make(chan struct{}, o.MaxConcurrentBuilds),
+		wms:      wmsMap,
+		wmsNames: wmsNames,
 		flight:   make(map[string]chan struct{}),
 	}, nil
+}
+
+// WMSCatalog lists the configured ortho sources in name order.
+func (s *Service) WMSCatalog() []WMSSource {
+	out := make([]WMSSource, 0, len(s.wmsNames))
+	for _, name := range s.wmsNames {
+		out = append(out, s.wms[name])
+	}
+	return out
 }
 
 // Close stops background work.
@@ -217,20 +252,40 @@ func (s *Service) product(ctx context.Context, r ImageRequest, product string) (
 		fmt.Sprintf("%d", quality))
 	ext := formatExt(r.Format)
 
+	path, w, h, fetched, hit, err := s.buildCached(ctx, key, ext,
+		func(ctx context.Context) (string, int, int, int64, error) {
+			return s.build(ctx, r, product, scene, key, ext)
+		})
+	if err != nil {
+		return nil, err
+	}
+	if hit {
+		w, h = imageDims(path, r.Format)
+	} else {
+		s.log.Info("product built", "product", product, "scene", scene.ID,
+			"size", fmt.Sprintf("%dx%d", w, h), "format", r.Format, "fetched_bytes", fetched)
+	}
+	return &Result{
+		Path: path, ContentType: formatContentType(r.Format),
+		Scene: scene, CacheHit: hit, Width: w, Height: h, BytesFetched: fetched,
+	}, nil
+}
+
+// buildCached serves key/ext from the cache, or runs build exactly once
+// across concurrent callers of the same key.
+func (s *Service) buildCached(ctx context.Context, key, ext string,
+	build func(context.Context) (string, int, int, int64, error)) (path string, w, h int, fetched int64, hit bool, err error) {
+
 	for {
 		if p, ok := s.cache.Get(key, ext); ok {
-			w, h := imageDims(p, r.Format)
-			return &Result{
-				Path: p, ContentType: formatContentType(r.Format),
-				Scene: scene, CacheHit: true, Width: w, Height: h,
-			}, nil
+			return p, 0, 0, 0, true, nil
 		}
 		s.mu.Lock()
 		if ch, ok := s.flight[key]; ok {
 			s.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return "", 0, 0, 0, false, ctx.Err()
 			case <-ch:
 			}
 			continue
@@ -239,21 +294,90 @@ func (s *Service) product(ctx context.Context, r ImageRequest, product string) (
 		s.flight[key] = ch
 		s.mu.Unlock()
 
-		path, w, h, fetched, err := s.build(ctx, r, product, scene, key, ext)
+		path, w, h, fetched, err = build(ctx)
 		s.mu.Lock()
 		delete(s.flight, key)
 		s.mu.Unlock()
 		close(ch)
-		if err != nil {
-			return nil, err
-		}
-		s.log.Info("product built", "product", product, "scene", scene.ID,
-			"size", fmt.Sprintf("%dx%d", w, h), "format", r.Format, "fetched_bytes", fetched)
-		return &Result{
-			Path: path, ContentType: formatContentType(r.Format),
-			Scene: scene, CacheHit: false, Width: w, Height: h, BytesFetched: fetched,
-		}, nil
+		return path, w, h, fetched, false, err
 	}
+}
+
+// Ortho fetches a server-rendered orthophoto window from a configured WMS
+// source.
+func (s *Service) Ortho(ctx context.Context, r OrthoRequest) (*Result, error) {
+	if err := r.normalize(); err != nil {
+		return nil, err
+	}
+	src, ok := s.wms[r.Source]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown source %q (available: %s)",
+			ErrInvalid, r.Source, strings.Join(s.wmsNames, ", "))
+	}
+	px := min(r.Px, src.MaxPx)
+	key := cache.Key("v1-ortho", src.Name,
+		fmt.Sprintf("%.6f,%.6f", r.Lat, r.Lon),
+		fmt.Sprintf("%.3f", r.SizeKM),
+		fmt.Sprintf("%d", px),
+		string(r.Format))
+	ext := formatExt(r.Format)
+
+	path, _, _, fetched, hit, err := s.buildCached(ctx, key, ext,
+		func(ctx context.Context) (string, int, int, int64, error) {
+			return s.buildOrtho(ctx, r, src, px, key, ext)
+		})
+	if err != nil {
+		return nil, err
+	}
+	if !hit {
+		s.log.Info("ortho built", "source", src.Name, "px", px,
+			"format", r.Format, "fetched_bytes", fetched)
+	}
+	return &Result{
+		Path: path, ContentType: formatContentType(r.Format),
+		Source: src.Name, SourceGSD: src.GSD,
+		CacheHit: hit, Width: px, Height: px, BytesFetched: fetched,
+	}, nil
+}
+
+func (s *Service) buildOrtho(ctx context.Context, r OrthoRequest, src WMSSource, px int, key, ext string) (string, int, int, int64, error) {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", 0, 0, 0, ctx.Err()
+	}
+	defer func() { <-s.sem }()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	dLat, dLon, err := geo.AOIDegrees(r.Lat, r.Lon, r.SizeKM)
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	var fetched int64
+	path, err := s.cache.Put(key, ext, func(w io.Writer) error {
+		n, err := wms.Fetch(ctx, s.httpc, defaultUserAgent, wms.Request{
+			BaseURL: src.BaseURL,
+			Layers:  src.Layers,
+			Version: src.Version,
+			CRS:     src.CRS,
+			MinLat:  r.Lat - dLat,
+			MinLon:  r.Lon - dLon,
+			MaxLat:  r.Lat + dLat,
+			MaxLon:  r.Lon + dLon,
+			Px:      px,
+			MIME:    formatContentType(r.Format),
+		}, w)
+		fetched = n
+		if err != nil {
+			return fmt.Errorf("%w: source %s: %v", ErrUpstream, src.Name, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, 0, fetched, err
+	}
+	return path, px, px, fetched, nil
 }
 
 func (s *Service) build(ctx context.Context, r ImageRequest, product string, scene Scene, key, ext string) (string, int, int, int64, error) {

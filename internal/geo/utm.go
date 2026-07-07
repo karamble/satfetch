@@ -71,13 +71,23 @@ func LatLonToUTM(epsg int, lat, lon float64) (easting, northing float64, err err
 	return easting, northing, nil
 }
 
+// AOIDegrees returns the half-extents in degrees of a sizeKM x sizeKM square
+// centered on lat/lon.
+func AOIDegrees(lat, lon, sizeKM float64) (dLat, dLon float64, err error) {
+	dLat = (sizeKM / 2) / 110.574
+	dLon = (sizeKM / 2) / (111.320 * math.Cos(lat*math.Pi/180))
+	if lon-dLon < -180 || lon+dLon > 180 {
+		return 0, 0, fmt.Errorf("geo: window crosses the antimeridian")
+	}
+	return dLat, dLon, nil
+}
+
 // AOIBBox returns the projected bounding box of a sizeKM x sizeKM square
 // centered on lat/lon, by projecting its four corners into the given CRS.
 func AOIBBox(epsg int, lat, lon, sizeKM float64) (minX, minY, maxX, maxY float64, err error) {
-	dLat := (sizeKM / 2) / 110.574
-	dLon := (sizeKM / 2) / (111.320 * math.Cos(lat*math.Pi/180))
-	if lon-dLon < -180 || lon+dLon > 180 {
-		return 0, 0, 0, 0, fmt.Errorf("geo: window crosses the antimeridian")
+	dLat, dLon, err := AOIDegrees(lat, lon, sizeKM)
+	if err != nil {
+		return 0, 0, 0, 0, err
 	}
 	corners := [4][2]float64{
 		{lat + dLat, lon - dLon},

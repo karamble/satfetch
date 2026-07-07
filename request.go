@@ -45,6 +45,46 @@ type ScenesRequest struct {
 	Limit    int     // default 20, max 50
 }
 
+// OrthoRequest asks for a server-rendered orthophoto around a point from a
+// configured WMS source.
+type OrthoRequest struct {
+	Lat, Lon float64
+	SizeKM   float64 // AOI edge length, 0.1..10, default 1
+	Source   string  // WMS source name, required
+	Format   Format  // png or jpeg, default jpeg
+	Px       int     // output width and height, 64..4096, default 1024
+}
+
+func (r *OrthoRequest) normalize() error {
+	if err := checkPoint(r.Lat, r.Lon); err != nil {
+		return err
+	}
+	if r.Source == "" {
+		return fmt.Errorf("%w: source required", ErrInvalid)
+	}
+	if r.SizeKM == 0 {
+		r.SizeKM = 1
+	}
+	if r.SizeKM < 0.1 || r.SizeKM > 10 {
+		return fmt.Errorf("%w: size_km %v out of range 0.1..10", ErrInvalid, r.SizeKM)
+	}
+	if r.Format == "" {
+		r.Format = FormatJPEG
+	}
+	switch r.Format {
+	case FormatPNG, FormatJPEG:
+	default:
+		return fmt.Errorf("%w: ortho supports png or jpeg", ErrInvalid)
+	}
+	if r.Px == 0 {
+		r.Px = 1024
+	}
+	if r.Px < 64 || r.Px > 4096 {
+		return fmt.Errorf("%w: px %d out of range 64..4096", ErrInvalid, r.Px)
+	}
+	return nil
+}
+
 func checkPoint(lat, lon float64) error {
 	if math.IsNaN(lat) || lat < -90 || lat > 90 {
 		return fmt.Errorf("%w: lat %v out of range -90..90", ErrInvalid, lat)

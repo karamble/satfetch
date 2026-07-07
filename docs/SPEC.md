@@ -127,9 +127,29 @@ Success headers: `X-Scene-ID`, `X-Scene-Datetime` (RFC3339),
 (20, max 50). Response: `{"scenes":[{"id","datetime","cloud_cover",
 "thumbnail","assets":["visual","red","nir","scl"]}]}`.
 
+`/ortho` parameters: `lat`, `lon` (required), `source` (required, a
+registry name from `/sources`), `size_km` (1, 0.1..10), `px` (1024,
+64..4096, output width and height; clamped to the source's server cap),
+`format` (`jpeg` default | `png`). The WMS server renders the window, so
+there is no scene, no cloud filter, no NDVI and no GeoTIFF here; success
+headers are `X-Source`, `X-Source-GSD` and `X-Cache`. `/sources` returns
+`{"sources":[{"name","gsd","attribution"}]}`.
+
 `/healthz` returns `{"status":"ok"}` checking nothing external. `/metrics`
 returns plain-text counters: requests by endpoint/status, cache hits, build
 seconds sum/count, STAC errors, upstream bytes fetched.
+
+### Ortho WMS sources
+
+`Options.WMSSources` registers WMS 1.3.0 GetMap endpoints (default:
+BuiltinWMSSources() - Poland GUGiK 25 cm and 10 cm, Netherlands PDOK 8 cm
+and 25 cm, all keyless and live-verified). Requests always use CRS
+EPSG:4326, whose 1.3.0 BBOX axis order is lat,lon. The AOI is square in
+meters, so WIDTH = HEIGHT = px. WMS failures often arrive as HTTP 200 with
+an XML service exception: any non-image content type is treated as an
+upstream error (detail logged, never sent to clients). Fetches stream
+straight into the cache and share the build semaphore, timeout and retry
+policy with the scene pipeline.
 
 ## 5. Constraints and conventions
 

@@ -131,3 +131,22 @@ func TestAOIBBoxAntimeridian(t *testing.T) {
 		t.Error("expected antimeridian rejection")
 	}
 }
+
+func TestAOIDegrees(t *testing.T) {
+	dLat, dLon, err := AOIDegrees(50.2649, 19.0238, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2.5 / 110.574; math.Abs(dLat-want) > 1e-12 {
+		t.Errorf("dLat %v, want %v", dLat, want)
+	}
+	if dLon <= dLat {
+		t.Errorf("dLon %v should exceed dLat %v at latitude 50", dLon, dLat)
+	}
+	if _, _, err := AOIDegrees(60, 179.99, 50); err == nil {
+		t.Error("expected antimeridian rejection")
+	}
+	if _, _, err := AOIDegrees(0, 0, 1); err != nil {
+		t.Errorf("unexpected error at the origin: %v", err)
+	}
+}

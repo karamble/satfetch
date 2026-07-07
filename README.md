@@ -17,6 +17,8 @@ the Go standard library and cached on disk.
 - NDVI (`/ndvi`): vegetation index from the red and nir bands, as a
   color-ramp PNG or a Float32 GeoTIFF.
 - Scene listing (`/scenes`): JSON metadata of matching acquisitions.
+- Orthophotos (`/ortho`): centimeter-class aerial imagery from keyless
+  national WMS services (`/sources` lists them).
 
 ## Build and run
 
@@ -60,6 +62,32 @@ Success responses carry `X-Scene-ID`, `X-Scene-Datetime`,
 `GET /scenes` takes `lat`, `lon`, `max_cloud` (default 100), `days` (default
 90) and `limit` (default 20, max 50). `GET /healthz` and `GET /metrics`
 (plain-text counters) round out the surface.
+
+`GET /ortho` serves centimeter-class orthophotos rendered by national WMS
+services instead of Sentinel-2:
+
+| Param | Default | Constraints |
+|---|---|---|
+| `lat`, `lon` | required | as above |
+| `source` | required | a name from `GET /sources` |
+| `size_km` | 1 | 0.1..10 |
+| `px` | 1024 | 64..4096, output width and height |
+| `format` | `jpeg` | `jpeg`, `png` |
+
+Success responses carry `X-Source`, `X-Source-GSD` and `X-Cache`. Built-in
+sources (all keyless, verified):
+
+| name | coverage | native GSD | data |
+|---|---|---|---|
+| `pl` | Poland | 0.25 m | GUGiK geoportal.gov.pl |
+| `pl-hires` | Poland (cities) | 0.10 m | GUGiK geoportal.gov.pl |
+| `nl` | Netherlands | 0.08 m | Beeldmateriaal Nederland via PDOK, CC BY 4.0 |
+| `nl-25` | Netherlands | 0.25 m | Beeldmateriaal Nederland via PDOK, CC BY 4.0 |
+
+Orthophotos are flown on multi-year cycles (not current like Sentinel-2), and
+requests outside a source's national coverage come back blank. For native
+detail keep `size_km * 1000 / px` near the source GSD. Library callers can
+register any WMS 1.3.0 endpoint via `Options.WMSSources`.
 
 Smoke test:
 
