@@ -263,18 +263,19 @@ func (s *Server) handleOrtho(w http.ResponseWriter, r *http.Request) {
 
 type sourceJSON struct {
 	Name        string  `json:"name"`
+	Type        string  `json:"type"`
 	GSD         float64 `json:"gsd"`
 	Attribution string  `json:"attribution,omitempty"`
 }
 
 func (s *Server) handleSources(w http.ResponseWriter, _ *http.Request) {
-	catalog := s.svc.WMSCatalog()
+	catalog := s.svc.SourceCatalog()
 	out := struct {
 		Sources []sourceJSON `json:"sources"`
 	}{Sources: make([]sourceJSON, 0, len(catalog))}
 	for _, src := range catalog {
 		out.Sources = append(out.Sources, sourceJSON{
-			Name: src.Name, GSD: src.GSD, Attribution: src.Attribution,
+			Name: src.Name, Type: src.Type, GSD: src.GSD, Attribution: src.Attribution,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

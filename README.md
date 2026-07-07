@@ -75,36 +75,43 @@ services instead of Sentinel-2:
 | `format` | `jpeg` | `jpeg`, `png` |
 
 Success responses carry `X-Source`, `X-Source-GSD` and `X-Cache`. Built-in
-sources (every entry verified with a live keyless GetMap fetch):
+sources (every entry verified with a live keyless fetch). WMS sources pass
+the server-rendered image through; tile sources mosaic and crop WebMercator
+pyramid tiles client-side and re-encode (jpeg quality 85), with output
+bounded by `px` (the result lands between px/2 and px per side):
 
-| name | coverage | native GSD | data |
-|---|---|---|---|
-| `pl` | Poland | 0.25 m | GUGiK geoportal.gov.pl |
-| `pl-hires` | Poland (cities) | 0.10 m | GUGiK geoportal.gov.pl |
-| `nl` | Netherlands | 0.08 m | Beeldmateriaal Nederland via PDOK, CC BY 4.0 |
-| `nl-25` | Netherlands | 0.25 m | Beeldmateriaal Nederland via PDOK, CC BY 4.0 |
-| `fr` | France | 0.20 m | IGN France, Geoplateforme |
-| `ch` | Switzerland | 0.10 m | swisstopo SWISSIMAGE |
-| `es` | Spain | 0.25 m | IGN Spain PNOA, CC BY 4.0 |
-| `de-nrw` | Germany, North Rhine-Westphalia | 0.10 m | Geobasis NRW, dl-zero-de/2.0 |
-| `de-by` | Germany, Bavaria | 0.40 m | Bayerische Vermessungsverwaltung, CC BY 4.0 |
-| `be-vl` | Belgium, Flanders | 0.25 m | Digitaal Vlaanderen |
-| `lu` | Luxembourg | 0.20 m | geoportail.lu |
-| `sk` | Slovakia | 0.20 m | GKU Bratislava |
-| `pt` | Portugal | 0.30 m | DGT OrtoSat 2023 |
-| `us` | USA | 0.6-1 m | USGS The National Map, public domain |
+| name | type | coverage | native GSD | data |
+|---|---|---|---|---|
+| `pl` | wms | Poland | 0.25 m | GUGiK geoportal.gov.pl |
+| `pl-hires` | wms | Poland (cities) | 0.10 m | GUGiK geoportal.gov.pl |
+| `nl` | wms | Netherlands | 0.08 m | Beeldmateriaal Nederland via PDOK, CC BY 4.0 |
+| `nl-25` | wms | Netherlands | 0.25 m | Beeldmateriaal Nederland via PDOK, CC BY 4.0 |
+| `fr` | wms | France | 0.20 m | IGN France, Geoplateforme |
+| `ch` | wms | Switzerland | 0.10 m | swisstopo SWISSIMAGE |
+| `es` | wms | Spain | 0.25 m | IGN Spain PNOA, CC BY 4.0 |
+| `de-nrw` | wms | Germany, North Rhine-Westphalia | 0.10 m | Geobasis NRW, dl-zero-de/2.0 |
+| `de-by` | wms | Germany, Bavaria | 0.40 m | Bayerische Vermessungsverwaltung, CC BY 4.0 |
+| `be-vl` | wms | Belgium, Flanders | 0.25 m | Digitaal Vlaanderen |
+| `lu` | wms | Luxembourg | 0.20 m | geoportail.lu |
+| `sk` | wms | Slovakia | 0.20 m | GKU Bratislava |
+| `pt` | wms | Portugal | 0.30 m | DGT OrtoSat 2023 |
+| `us` | wms | USA | 0.6-1 m | USGS The National Map, public domain |
+| `at` | tiles | Austria | 0.30 m | basemap.at, CC BY 4.0 |
+| `cz` | tiles | Czechia | 0.20 m | CUZK |
+| `ee` | tiles | Estonia | 0.16 m | Estonian Land Board (Maa-amet) |
 
 Orthophotos are flown on multi-year cycles (not current like Sentinel-2), and
 requests outside a source's coverage come back blank. For native detail keep
 `size_km * 1000 / px` near the source GSD. Library callers can register any
-WMS 1.3.0 endpoint that serves EPSG:4326 via `Options.WMSSources`.
+WMS 1.3.0 endpoint that serves EPSG:4326 via `Options.WMSSources`, and any
+WebMercator tile pyramid (WMTS/XYZ templates with `{z}/{x}/{y}`, TMS via
+`{-y}`) via `Options.TileSources`.
 
-Countries not included and why (checked): Austria and Slovenia publish open
-imagery as WMTS tiles only (no WMS); Estonia's WMS lacks EPSG:4326; Czechia's
-open WMS now redirects through its geoportal application; Latvia's server was
-unreachable; Denmark, Finland and Norway require (free) API tokens; Sweden,
-the UK, Ireland, Italy and Hungary have no national open orthophoto service.
-Germany beyond NRW and Bavaria is per-state and can be added the same way.
+Countries not included and why (checked): Slovenia's open endpoints were
+unreachable; Latvia's server timed out; Denmark, Finland and Norway require
+(free) API tokens; Sweden, the UK, Ireland, Italy and Hungary have no
+national open orthophoto service. Germany beyond NRW and Bavaria is per-state
+and can be added the same way. Non-WebMercator tile grids are not supported.
 
 Smoke test:
 

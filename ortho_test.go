@@ -8,11 +8,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -72,6 +75,7 @@ func TestOrtho(t *testing.T) {
 		WMSSources: []WMSSource{
 			{Name: "test", BaseURL: ts.URL, Layers: "L", GSD: 0.25, MaxPx: 2048},
 		},
+		TileSources: []TileSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +125,93 @@ func TestOrtho(t *testing.T) {
 	}
 }
 
+// tileFixture serves solid-color 256px PNG tiles whose red channel encodes
+// the tile column and green channel the row.
+func tileFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 3 {
+			http.NotFound(w, r)
+			return
+		}
+		x, _ := strconv.Atoi(parts[1])
+		y, _ := strconv.Atoi(parts[2])
+		img := image.NewNRGBA(image.Rect(0, 0, 256, 256))
+		for i := 0; i < 256*256; i++ {
+			img.Pix[i*4+0] = uint8(x % 256)
+			img.Pix[i*4+1] = uint8(y % 256)
+			img.Pix[i*4+3] = 0xff
+		}
+		w.Header().Set("Content-Type", "image/png")
+		png.Encode(w, img)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestOrthoTiles(t *testing.T) {
+	ts := tileFixture(t)
+	svc, err := New(Options{
+		Catalog:    stubCatalog{},
+		CacheDir:   t.TempDir(),
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WMSSources: []WMSSource{},
+		TileSources: []TileSource{
+			{Name: "tt", URLTemplate: ts.URL + "/{z}/{x}/{y}", GSD: 0.3, MaxZoom: 19},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	res, err := svc.Ortho(context.Background(), OrthoRequest{
+		Lat: 50.2649, Lon: 19.0238, SizeKM: 0.5, Source: "tt", Px: 512, Format: FormatPNG,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CacheHit || res.Source != "tt" || res.ContentType != "image/png" {
+		t.Errorf("result %+v", res)
+	}
+	if res.Width <= 256 || res.Width > 512 || res.Height <= 256 || res.Height > 512 {
+		t.Errorf("dimensions %dx%d, want within (256,512]", res.Width, res.Height)
+	}
+	f, err := os.Open(res.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(f)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Dx() != res.Width {
+		t.Errorf("file width %d, result width %d", img.Bounds().Dx(), res.Width)
+	}
+
+	res, err = svc.Ortho(context.Background(), OrthoRequest{
+		Lat: 50.2649, Lon: 19.0238, SizeKM: 0.5, Source: "tt", Px: 512, Format: FormatPNG,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.CacheHit {
+		t.Error("second identical call must hit the cache")
+	}
+
+	res, err = svc.Ortho(context.Background(), OrthoRequest{
+		Lat: 50.2649, Lon: 19.0238, SizeKM: 0.5, Source: "tt", Px: 512,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ContentType != "image/jpeg" {
+		t.Errorf("default format content type %s", res.ContentType)
+	}
+}
+
 func TestOrthoDefaultRegistry(t *testing.T) {
 	svc, err := New(Options{
 		Catalog:  stubCatalog{},
@@ -132,29 +223,51 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 	}
 	defer svc.Close()
 
-	catalog := svc.WMSCatalog()
-	if len(catalog) != len(BuiltinWMSSources()) {
-		t.Fatalf("builtin sources %d, want %d", len(catalog), len(BuiltinWMSSources()))
+	catalog := svc.SourceCatalog()
+	if want := len(BuiltinWMSSources()) + len(BuiltinTileSources()); len(catalog) != want {
+		t.Fatalf("builtin sources %d, want %d", len(catalog), want)
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]string)
 	prev := ""
 	for _, src := range catalog {
-		if src.Name == "" || src.BaseURL == "" || src.Layers == "" ||
-			src.GSD <= 0 || src.Attribution == "" || src.MaxPx <= 0 {
+		if src.Name == "" || src.GSD <= 0 || src.Attribution == "" {
 			t.Errorf("incomplete source %+v", src)
 		}
-		if seen[src.Name] {
+		if src.Type != "wms" && src.Type != "tiles" {
+			t.Errorf("source %q has type %q", src.Name, src.Type)
+		}
+		if _, dup := seen[src.Name]; dup {
 			t.Errorf("duplicate source name %q", src.Name)
 		}
-		seen[src.Name] = true
+		seen[src.Name] = src.Type
 		if src.Name < prev {
 			t.Errorf("catalog not sorted: %q after %q", src.Name, prev)
 		}
 		prev = src.Name
 	}
-	for _, want := range []string{"pl", "nl", "fr", "ch", "es", "us"} {
-		if !seen[want] {
-			t.Errorf("missing builtin source %q", want)
+	for name, typ := range map[string]string{
+		"pl": "wms", "nl": "wms", "fr": "wms", "ch": "wms", "es": "wms", "us": "wms",
+		"at": "tiles", "cz": "tiles", "ee": "tiles",
+	} {
+		if seen[name] != typ {
+			t.Errorf("source %q has type %q, want %q", name, seen[name], typ)
 		}
+	}
+}
+
+func TestDuplicateSourceName(t *testing.T) {
+	_, err := New(Options{
+		Catalog:  stubCatalog{},
+		CacheDir: t.TempDir(),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WMSSources: []WMSSource{
+			{Name: "dup", BaseURL: "http://a", Layers: "L", GSD: 1, Attribution: "a"},
+		},
+		TileSources: []TileSource{
+			{Name: "dup", URLTemplate: "http://b/{z}/{x}/{y}", GSD: 1, Attribution: "b"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate source name") {
+		t.Errorf("error %v, want duplicate-name rejection", err)
 	}
 }

@@ -12,7 +12,7 @@ import (
 	"image"
 	"image/color"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -132,10 +132,11 @@ func newAPI(t *testing.T, cat satfetch.Catalog, wmsSources ...satfetch.WMSSource
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc, err := satfetch.New(satfetch.Options{
-		Catalog:    cat,
-		CacheDir:   t.TempDir(),
-		Logger:     log,
-		WMSSources: wmsSources,
+		Catalog:     cat,
+		CacheDir:    t.TempDir(),
+		Logger:      log,
+		WMSSources:  wmsSources,
+		TileSources: []satfetch.TileSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -377,6 +378,7 @@ func TestSources(t *testing.T) {
 	var out struct {
 		Sources []struct {
 			Name        string  `json:"name"`
+			Type        string  `json:"type"`
 			GSD         float64 `json:"gsd"`
 			Attribution string  `json:"attribution"`
 		} `json:"sources"`
@@ -384,9 +386,80 @@ func TestSources(t *testing.T) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Sources) != 1 || out.Sources[0].Name != "test" ||
+	if len(out.Sources) != 1 || out.Sources[0].Name != "test" || out.Sources[0].Type != "wms" ||
 		out.Sources[0].GSD != 0.25 || out.Sources[0].Attribution != "test data" {
 		t.Errorf("sources %+v", out.Sources)
+	}
+}
+
+// newAPIWithTiles serves the API over a tile-source-only registry.
+func newAPIWithTiles(t *testing.T, cat satfetch.Catalog, tileSources ...satfetch.TileSource) *httptest.Server {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc, err := satfetch.New(satfetch.Options{
+		Catalog:     cat,
+		CacheDir:    t.TempDir(),
+		Logger:      log,
+		WMSSources:  []satfetch.WMSSource{},
+		TileSources: tileSources,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	ts := httptest.NewServer(httpapi.New(svc, log))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestOrthoTilesEndpoint(t *testing.T) {
+	tileHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		img := image.NewNRGBA(image.Rect(0, 0, 256, 256))
+		for i := 3; i < len(img.Pix); i += 4 {
+			img.Pix[i-1] = 0x80
+			img.Pix[i] = 0xff
+		}
+		w.Header().Set("Content-Type", "image/png")
+		png.Encode(w, img)
+	}))
+	t.Cleanup(tileHost.Close)
+	src := satfetch.TileSource{
+		Name: "tt", URLTemplate: tileHost.URL + "/{z}/{x}/{y}",
+		GSD: 0.3, MaxZoom: 19, Attribution: "tile test",
+	}
+	ts := newAPIWithTiles(t, &fakeCatalog{}, src)
+
+	url := fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=tt&size_km=0.5&px=512&format=png", ts.URL, testLat, testLon)
+	resp, body := get(t, url)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
+		t.Errorf("content type %s", ct)
+	}
+	if resp.Header.Get("X-Source") != "tt" {
+		t.Errorf("X-Source %q", resp.Header.Get("X-Source"))
+	}
+	if resp.Header.Get("X-Cache") != "MISS" {
+		t.Errorf("X-Cache %q", resp.Header.Get("X-Cache"))
+	}
+	img, _, err := image.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	if b.Dx() <= 256 || b.Dx() > 512 {
+		t.Errorf("width %d, want within (256,512]", b.Dx())
+	}
+
+	resp, _ = get(t, url)
+	if resp.Header.Get("X-Cache") != "HIT" {
+		t.Errorf("second call X-Cache %q", resp.Header.Get("X-Cache"))
+	}
+
+	_, body = get(t, ts.URL+"/sources")
+	if !strings.Contains(string(body), `"type":"tiles"`) {
+		t.Errorf("sources missing tiles type: %s", body)
 	}
 }
 

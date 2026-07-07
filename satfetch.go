@@ -29,6 +29,7 @@ import (
 	"github.com/karamble/satfetch/internal/geo"
 	"github.com/karamble/satfetch/internal/render"
 	"github.com/karamble/satfetch/internal/tiffw"
+	"github.com/karamble/satfetch/internal/tiles"
 	"github.com/karamble/satfetch/internal/wms"
 )
 
@@ -42,7 +43,8 @@ type Options struct {
 	TileConcurrency     int           // parallel range requests per build, default 4
 	HTTPClient          *http.Client  // pixel-data fetches
 	Logger              *slog.Logger
-	WMSSources          []WMSSource // ortho sources; nil means BuiltinWMSSources()
+	WMSSources          []WMSSource  // ortho sources; nil means BuiltinWMSSources()
+	TileSources         []TileSource // tile pyramids; nil means BuiltinTileSources()
 }
 
 // Result describes a finished product sitting in the cache.
@@ -67,7 +69,8 @@ type Service struct {
 	tileConc int
 	sem      chan struct{}
 	wms      map[string]WMSSource
-	wmsNames []string
+	tiles    map[string]TileSource
+	names    []string // all source names, sorted
 
 	mu     sync.Mutex
 	flight map[string]chan struct{}
@@ -103,8 +106,12 @@ func New(o Options) (*Service, error) {
 	if o.WMSSources == nil {
 		o.WMSSources = BuiltinWMSSources()
 	}
+	if o.TileSources == nil {
+		o.TileSources = BuiltinTileSources()
+	}
 	wmsMap := make(map[string]WMSSource, len(o.WMSSources))
-	wmsNames := make([]string, 0, len(o.WMSSources))
+	tileMap := make(map[string]TileSource, len(o.TileSources))
+	names := make([]string, 0, len(o.WMSSources)+len(o.TileSources))
 	for _, src := range o.WMSSources {
 		if src.Name == "" || src.BaseURL == "" {
 			return nil, fmt.Errorf("satfetch: WMS source needs a name and base URL")
@@ -112,10 +119,32 @@ func New(o Options) (*Service, error) {
 		if src.MaxPx <= 0 {
 			src.MaxPx = 4096
 		}
+		if _, dup := wmsMap[src.Name]; dup {
+			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		}
 		wmsMap[src.Name] = src
-		wmsNames = append(wmsNames, src.Name)
+		names = append(names, src.Name)
 	}
-	sort.Strings(wmsNames)
+	for _, src := range o.TileSources {
+		if src.Name == "" || src.URLTemplate == "" {
+			return nil, fmt.Errorf("satfetch: tile source needs a name and URL template")
+		}
+		if src.TileSize <= 0 {
+			src.TileSize = 256
+		}
+		if src.MaxZoom <= 0 {
+			src.MaxZoom = 19
+		}
+		if _, dup := wmsMap[src.Name]; dup {
+			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		}
+		if _, dup := tileMap[src.Name]; dup {
+			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		}
+		tileMap[src.Name] = src
+		names = append(names, src.Name)
+	}
+	sort.Strings(names)
 	c, err := cache.New(o.CacheDir, o.CacheMaxMB, o.Logger)
 	if err != nil {
 		return nil, err
@@ -129,16 +158,30 @@ func New(o Options) (*Service, error) {
 		tileConc: o.TileConcurrency,
 		sem:      make(chan struct{}, o.MaxConcurrentBuilds),
 		wms:      wmsMap,
-		wmsNames: wmsNames,
+		tiles:    tileMap,
+		names:    names,
 		flight:   make(map[string]chan struct{}),
 	}, nil
 }
 
-// WMSCatalog lists the configured ortho sources in name order.
-func (s *Service) WMSCatalog() []WMSSource {
-	out := make([]WMSSource, 0, len(s.wmsNames))
-	for _, name := range s.wmsNames {
-		out = append(out, s.wms[name])
+// SourceInfo describes one configured ortho source.
+type SourceInfo struct {
+	Name        string
+	Type        string // "wms" or "tiles"
+	GSD         float64
+	Attribution string
+}
+
+// SourceCatalog lists the configured ortho sources in name order.
+func (s *Service) SourceCatalog() []SourceInfo {
+	out := make([]SourceInfo, 0, len(s.names))
+	for _, name := range s.names {
+		if src, ok := s.wms[name]; ok {
+			out = append(out, SourceInfo{Name: name, Type: "wms", GSD: src.GSD, Attribution: src.Attribution})
+			continue
+		}
+		src := s.tiles[name]
+		out = append(out, SourceInfo{Name: name, Type: "tiles", GSD: src.GSD, Attribution: src.Attribution})
 	}
 	return out
 }
@@ -303,17 +346,22 @@ func (s *Service) buildCached(ctx context.Context, key, ext string,
 	}
 }
 
-// Ortho fetches a server-rendered orthophoto window from a configured WMS
-// source.
+// Ortho fetches an orthophoto window from a configured WMS or tile source.
 func (s *Service) Ortho(ctx context.Context, r OrthoRequest) (*Result, error) {
 	if err := r.normalize(); err != nil {
 		return nil, err
 	}
-	src, ok := s.wms[r.Source]
-	if !ok {
-		return nil, fmt.Errorf("%w: unknown source %q (available: %s)",
-			ErrInvalid, r.Source, strings.Join(s.wmsNames, ", "))
+	if src, ok := s.wms[r.Source]; ok {
+		return s.orthoWMS(ctx, r, src)
 	}
+	if src, ok := s.tiles[r.Source]; ok {
+		return s.orthoTiles(ctx, r, src)
+	}
+	return nil, fmt.Errorf("%w: unknown source %q (available: %s)",
+		ErrInvalid, r.Source, strings.Join(s.names, ", "))
+}
+
+func (s *Service) orthoWMS(ctx context.Context, r OrthoRequest, src WMSSource) (*Result, error) {
 	px := min(r.Px, src.MaxPx)
 	key := cache.Key("v1-ortho", src.Name,
 		fmt.Sprintf("%.6f,%.6f", r.Lat, r.Lon),
@@ -338,6 +386,86 @@ func (s *Service) Ortho(ctx context.Context, r OrthoRequest) (*Result, error) {
 		Source: src.Name, SourceGSD: src.GSD,
 		CacheHit: hit, Width: px, Height: px, BytesFetched: fetched,
 	}, nil
+}
+
+// pickZoom returns the deepest zoom level whose output for the request
+// stays within px pixels per side.
+func pickZoom(src TileSource, lat, sizeKM float64, px int) int {
+	sizeM := sizeKM * 1000
+	for z := src.MaxZoom; z > 0; z-- {
+		if sizeM/tiles.MetersPerPixel(lat, z) <= float64(px) {
+			return z
+		}
+	}
+	return 0
+}
+
+func (s *Service) orthoTiles(ctx context.Context, r OrthoRequest, src TileSource) (*Result, error) {
+	zoom := pickZoom(src, r.Lat, r.SizeKM, r.Px)
+	key := cache.Key("v1-ortho", src.Name,
+		fmt.Sprintf("%.6f,%.6f", r.Lat, r.Lon),
+		fmt.Sprintf("%.3f", r.SizeKM),
+		fmt.Sprintf("%d", r.Px),
+		string(r.Format))
+	ext := formatExt(r.Format)
+
+	path, w, h, fetched, hit, err := s.buildCached(ctx, key, ext,
+		func(ctx context.Context) (string, int, int, int64, error) {
+			return s.buildOrthoTiles(ctx, r, src, zoom, key, ext)
+		})
+	if err != nil {
+		return nil, err
+	}
+	if hit {
+		w, h = imageDims(path, r.Format)
+	} else {
+		s.log.Info("ortho built", "source", src.Name, "zoom", zoom,
+			"size", fmt.Sprintf("%dx%d", w, h), "format", r.Format, "fetched_bytes", fetched)
+	}
+	return &Result{
+		Path: path, ContentType: formatContentType(r.Format),
+		Source: src.Name, SourceGSD: src.GSD,
+		CacheHit: hit, Width: w, Height: h, BytesFetched: fetched,
+	}, nil
+}
+
+func (s *Service) buildOrthoTiles(ctx context.Context, r OrthoRequest, src TileSource, zoom int, key, ext string) (string, int, int, int64, error) {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", 0, 0, 0, ctx.Err()
+	}
+	defer func() { <-s.sem }()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	dLat, dLon, err := geo.AOIDegrees(r.Lat, r.Lon, r.SizeKM)
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	img, fetched, err := tiles.Fetch(ctx, s.httpc, defaultUserAgent, tiles.Request{
+		URLTemplate: src.URLTemplate,
+		MinLat:      r.Lat - dLat,
+		MinLon:      r.Lon - dLon,
+		MaxLat:      r.Lat + dLat,
+		MaxLon:      r.Lon + dLon,
+		Zoom:        zoom,
+		TileSize:    src.TileSize,
+		Concurrency: s.tileConc,
+	})
+	if err != nil {
+		return "", 0, 0, fetched, fmt.Errorf("%w: source %s: %v", ErrUpstream, src.Name, err)
+	}
+	writeOut := func(out io.Writer) error { return render.EncodePNG(out, img) }
+	if r.Format == FormatJPEG {
+		writeOut = func(out io.Writer) error { return render.EncodeJPEG(out, img, 85) }
+	}
+	path, err := s.cache.Put(key, ext, writeOut)
+	if err != nil {
+		return "", 0, 0, fetched, err
+	}
+	b := img.Bounds()
+	return path, b.Dx(), b.Dy(), fetched, nil
 }
 
 func (s *Service) buildOrtho(ctx context.Context, r OrthoRequest, src WMSSource, px int, key, ext string) (string, int, int, int64, error) {

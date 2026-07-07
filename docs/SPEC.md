@@ -139,6 +139,22 @@ headers are `X-Source`, `X-Source-GSD` and `X-Cache`. `/sources` returns
 returns plain-text counters: requests by endpoint/status, cache hits, build
 seconds sum/count, STAC errors, upstream bytes fetched.
 
+### Tile sources (WMTS/XYZ/TMS)
+
+`Options.TileSources` registers keyless WebMercator tile pyramids (default:
+BuiltinTileSources() - Austria basemap.at, Czechia CUZK WMTS, Estonia
+Maa-amet TMS, all live-verified). URL templates carry {z}, {x} and {y}
+({-y} for TMS row order). The client picks the deepest zoom level whose
+output stays within px per side (ground resolution 156543.0339 * cos(lat) /
+2^z meters per pixel), computes the covering tiles with slippy-map math,
+fetches them concurrently (same retry policy), decodes via image.Decode,
+mosaics with image/draw and crops to the exact AOI box. Tiles answering
+404/204 are outside coverage and stay black. The mosaic re-encodes to
+png or jpeg (quality 85). Latitudes beyond 85.05 and non-WebMercator grids
+are unsupported. Source names share one namespace with the WMS registry
+(uniqueness enforced at Service construction) and /ortho dispatches by
+where the name resolves.
+
 ### Ortho WMS sources
 
 `Options.WMSSources` registers WMS 1.3.0 GetMap endpoints (default:
