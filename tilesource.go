@@ -41,5 +41,26 @@ func BuiltinTileSources() []TileSource {
 			MaxZoom:     18,
 			Attribution: "Estonian Land Board (Maa-amet)",
 		},
+		{
+			Name:        "jp",
+			URLTemplate: "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg",
+			GSD:         0.2,
+			MaxZoom:     18,
+			Attribution: "GSI Japan, seamless photo",
+		},
+		{
+			Name:        "tw",
+			URLTemplate: "https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}",
+			GSD:         0.25,
+			MaxZoom:     20,
+			Attribution: "NLSC Taiwan",
+		},
+		{
+			Name:        "za",
+			URLTemplate: "https://aerial.openstreetmap.org.za/ngi-aerial/{z}/{x}/{y}.jpg",
+			GSD:         0.25,
+			MaxZoom:     19,
+			Attribution: "NGI South Africa via openstreetmap.org.za",
+		},
 	}
 }

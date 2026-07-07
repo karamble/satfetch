@@ -249,8 +249,9 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 	}
 	for name, typ := range map[string]string{
 		"pl": "wms", "nl": "wms", "fr": "wms", "ch": "wms", "es": "wms", "us": "wms",
-		"at": "tiles", "cz": "tiles", "ee": "tiles",
-		"si": "arcgis",
+		"de-bb": "wms", "be-wa": "wms", "es-ct": "wms",
+		"at": "tiles", "cz": "tiles", "ee": "tiles", "jp": "tiles", "tw": "tiles", "za": "tiles",
+		"si": "arcgis", "au-nsw": "arcgis",
 	} {
 		if seen[name] != typ {
 			t.Errorf("source %q has type %q, want %q", name, seen[name], typ)

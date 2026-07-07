@@ -143,7 +143,7 @@ seconds sum/count, STAC errors, upstream bytes fetched.
 
 `Options.TileSources` registers keyless WebMercator tile pyramids (default:
 BuiltinTileSources() - Austria basemap.at, Czechia CUZK WMTS, Estonia
-Maa-amet TMS, all live-verified). URL templates carry {z}, {x} and {y}
+Maa-amet TMS, Japan GSI, Taiwan NLSC, South Africa NGI, all live-verified). URL templates carry {z}, {x} and {y}
 ({-y} for TMS row order). The client picks the deepest zoom level whose
 output stays within px per side (ground resolution 156543.0339 * cos(lat) /
 2^z meters per pixel), computes the covering tiles with slippy-map math,
@@ -159,7 +159,8 @@ where the name resolves.
 
 `Options.ArcGISSources` registers keyless ArcGIS MapServer services whose
 export operation renders arbitrary boxes server-side (default:
-BuiltinArcGISSources() - Slovenia's GURS DOF hosted by ARSO, live-verified).
+BuiltinArcGISSources() - Slovenia's GURS DOF hosted by ARSO and NSW
+Australia's state imagery, live-verified).
 The request is one GET: bbox in WGS84 lon,lat order with bboxSR=4326,
 size=WxH, format jpg|png, f=image. ArcGIS reports failures as HTTP 200 with
 a JSON body: any non-image content type is treated as an upstream error.

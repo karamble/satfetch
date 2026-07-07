@@ -96,10 +96,25 @@ bounded by `px` (the result lands between px/2 and px per side):
 | `sk` | wms | Slovakia | 0.20 m | GKU Bratislava |
 | `pt` | wms | Portugal | 0.30 m | DGT OrtoSat 2023 |
 | `us` | wms | USA | 0.6-1 m | USGS The National Map, public domain |
+| `de-bb` | wms | Germany, Berlin + Brandenburg | 0.20 m | Geobasis Berlin-Brandenburg |
+| `de-ni` | wms | Germany, Lower Saxony | 0.20 m | LGLN, CC BY 4.0 |
+| `de-he` | wms | Germany, Hessen | 0.20 m | HVBG |
+| `de-sn` | wms | Germany, Saxony | 0.20 m | GeoSN |
+| `de-st` | wms | Germany, Saxony-Anhalt | 0.20 m | LVermGeo ST |
+| `de-th` | wms | Germany, Thuringia | 0.20 m | TLBG |
+| `de-mv` | wms | Germany, Mecklenburg-Vorpommern | 0.20 m | GeoBasis-DE/M-V |
+| `de-sh` | wms | Germany, Schleswig-Holstein | 0.20 m | GDI-SH |
+| `de-rp` | wms | Germany, Rhineland-Palatinate | 0.20 m | LVermGeo RP |
+| `be-wa` | wms | Belgium, Wallonia | 0.25 m | Service public de Wallonie |
+| `es-ct` | wms | Spain, Catalonia | 0.25 m | ICGC, CC BY 4.0 |
 | `at` | tiles | Austria | 0.30 m | basemap.at, CC BY 4.0 |
 | `cz` | tiles | Czechia | 0.20 m | CUZK |
 | `ee` | tiles | Estonia | 0.16 m | Estonian Land Board (Maa-amet) |
+| `jp` | tiles | Japan | ~0.20 m | GSI Japan seamless photo |
+| `tw` | tiles | Taiwan | ~0.25 m | NLSC Taiwan |
+| `za` | tiles | South Africa | 0.25 m | NGI via openstreetmap.org.za |
 | `si` | arcgis | Slovenia | 0.26 m | GURS DOF via ARSO |
+| `au-nsw` | arcgis | Australia, New South Wales | ~0.10 m | NSW Spatial Services, CC BY 4.0 |
 
 Orthophotos are flown on multi-year cycles (not current like Sentinel-2), and
 requests outside a source's coverage come back blank. For native detail keep
@@ -109,13 +124,19 @@ WebMercator tile pyramid (WMTS/XYZ templates with `{z}/{x}/{y}`, TMS via
 `{-y}`) via `Options.TileSources`, and any keyless ArcGIS MapServer export
 endpoint via `Options.ArcGISSources`.
 
-Countries not included and why (checked): Latvia's server timed out;
-Denmark, Finland and Norway require (free) API tokens; Sweden, the UK,
-Ireland, Italy and Hungary have no national open orthophoto service.
-Germany beyond NRW and Bavaria is per-state and can be added the same way.
-Non-WebMercator tile grids are not supported. (Slovenia's canonical GURS WMS
-was failing server-side when checked; the `si` source uses the ARSO-hosted
-ArcGIS mirror of the same DOF data instead.)
+Countries and regions checked but not included, and why: Denmark, Finland,
+Norway and Lithuania gate their services behind (free) tokens or accounts;
+Sweden, the UK, Ireland and Hungary have no open national orthophoto
+service; Latvia's and Brussels' servers were unreachable; South Tyrol's WMS
+refuses EPSG:4326; Indonesia publishes only dozens of per-region ArcGIS
+Image Services (no national mosaic, different export operation); Thailand's
+GISTDA sphere platform is key-gated; Egypt has no open national imagery
+service; Australia beyond NSW (Victoria, Queensland) uses ArcGIS Image
+Services too. Baden-Wuerttemberg charges fees; Berlin is covered by the
+joint Berlin-Brandenburg mosaic (de-bb). Non-WebMercator tile grids are not
+supported. (Slovenia's canonical GURS WMS was failing server-side when
+checked; the si source uses the ARSO-hosted ArcGIS mirror of the same DOF
+data instead.)
 
 Smoke test:
 

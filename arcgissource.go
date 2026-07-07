@@ -24,5 +24,11 @@ func BuiltinArcGISSources() []ArcGISSource {
 			GSD:         0.26,
 			Attribution: "GURS DOF via ARSO, Slovenia",
 		},
+		{
+			Name:        "au-nsw",
+			BaseURL:     "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Imagery/MapServer",
+			GSD:         0.1,
+			Attribution: "NSW Spatial Services, CC BY 4.0",
+		},
 	}
 }
