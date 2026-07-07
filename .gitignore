@@ -1,0 +1,5 @@
+/satfetch
+cache/
+*.log
+go.work
+go.work.sum
