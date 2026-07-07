@@ -99,19 +99,23 @@ bounded by `px` (the result lands between px/2 and px per side):
 | `at` | tiles | Austria | 0.30 m | basemap.at, CC BY 4.0 |
 | `cz` | tiles | Czechia | 0.20 m | CUZK |
 | `ee` | tiles | Estonia | 0.16 m | Estonian Land Board (Maa-amet) |
+| `si` | arcgis | Slovenia | 0.26 m | GURS DOF via ARSO |
 
 Orthophotos are flown on multi-year cycles (not current like Sentinel-2), and
 requests outside a source's coverage come back blank. For native detail keep
 `size_km * 1000 / px` near the source GSD. Library callers can register any
-WMS 1.3.0 endpoint that serves EPSG:4326 via `Options.WMSSources`, and any
+WMS 1.3.0 endpoint that serves EPSG:4326 via `Options.WMSSources`, any
 WebMercator tile pyramid (WMTS/XYZ templates with `{z}/{x}/{y}`, TMS via
-`{-y}`) via `Options.TileSources`.
+`{-y}`) via `Options.TileSources`, and any keyless ArcGIS MapServer export
+endpoint via `Options.ArcGISSources`.
 
-Countries not included and why (checked): Slovenia's open endpoints were
-unreachable; Latvia's server timed out; Denmark, Finland and Norway require
-(free) API tokens; Sweden, the UK, Ireland, Italy and Hungary have no
-national open orthophoto service. Germany beyond NRW and Bavaria is per-state
-and can be added the same way. Non-WebMercator tile grids are not supported.
+Countries not included and why (checked): Latvia's server timed out;
+Denmark, Finland and Norway require (free) API tokens; Sweden, the UK,
+Ireland, Italy and Hungary have no national open orthophoto service.
+Germany beyond NRW and Bavaria is per-state and can be added the same way.
+Non-WebMercator tile grids are not supported. (Slovenia's canonical GURS WMS
+was failing server-side when checked; the `si` source uses the ARSO-hosted
+ArcGIS mirror of the same DOF data instead.)
 
 Smoke test:
 

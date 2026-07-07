@@ -132,11 +132,12 @@ func newAPI(t *testing.T, cat satfetch.Catalog, wmsSources ...satfetch.WMSSource
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc, err := satfetch.New(satfetch.Options{
-		Catalog:     cat,
-		CacheDir:    t.TempDir(),
-		Logger:      log,
-		WMSSources:  wmsSources,
-		TileSources: []satfetch.TileSource{},
+		Catalog:       cat,
+		CacheDir:      t.TempDir(),
+		Logger:        log,
+		WMSSources:    wmsSources,
+		TileSources:   []satfetch.TileSource{},
+		ArcGISSources: []satfetch.ArcGISSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -397,11 +398,12 @@ func newAPIWithTiles(t *testing.T, cat satfetch.Catalog, tileSources ...satfetch
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc, err := satfetch.New(satfetch.Options{
-		Catalog:     cat,
-		CacheDir:    t.TempDir(),
-		Logger:      log,
-		WMSSources:  []satfetch.WMSSource{},
-		TileSources: tileSources,
+		Catalog:       cat,
+		CacheDir:      t.TempDir(),
+		Logger:        log,
+		WMSSources:    []satfetch.WMSSource{},
+		TileSources:   tileSources,
+		ArcGISSources: []satfetch.ArcGISSource{},
 	})
 	if err != nil {
 		t.Fatal(err)

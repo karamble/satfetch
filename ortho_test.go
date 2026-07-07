@@ -75,7 +75,8 @@ func TestOrtho(t *testing.T) {
 		WMSSources: []WMSSource{
 			{Name: "test", BaseURL: ts.URL, Layers: "L", GSD: 0.25, MaxPx: 2048},
 		},
-		TileSources: []TileSource{},
+		TileSources:   []TileSource{},
+		ArcGISSources: []ArcGISSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,6 +161,7 @@ func TestOrthoTiles(t *testing.T) {
 		TileSources: []TileSource{
 			{Name: "tt", URLTemplate: ts.URL + "/{z}/{x}/{y}", GSD: 0.3, MaxZoom: 19},
 		},
+		ArcGISSources: []ArcGISSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +226,7 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 	defer svc.Close()
 
 	catalog := svc.SourceCatalog()
-	if want := len(BuiltinWMSSources()) + len(BuiltinTileSources()); len(catalog) != want {
+	if want := len(BuiltinWMSSources()) + len(BuiltinTileSources()) + len(BuiltinArcGISSources()); len(catalog) != want {
 		t.Fatalf("builtin sources %d, want %d", len(catalog), want)
 	}
 	seen := make(map[string]string)
@@ -233,7 +235,7 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 		if src.Name == "" || src.GSD <= 0 || src.Attribution == "" {
 			t.Errorf("incomplete source %+v", src)
 		}
-		if src.Type != "wms" && src.Type != "tiles" {
+		if src.Type != "wms" && src.Type != "tiles" && src.Type != "arcgis" {
 			t.Errorf("source %q has type %q", src.Name, src.Type)
 		}
 		if _, dup := seen[src.Name]; dup {
@@ -248,6 +250,7 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 	for name, typ := range map[string]string{
 		"pl": "wms", "nl": "wms", "fr": "wms", "ch": "wms", "es": "wms", "us": "wms",
 		"at": "tiles", "cz": "tiles", "ee": "tiles",
+		"si": "arcgis",
 	} {
 		if seen[name] != typ {
 			t.Errorf("source %q has type %q, want %q", name, seen[name], typ)
@@ -269,5 +272,75 @@ func TestDuplicateSourceName(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicate source name") {
 		t.Errorf("error %v, want duplicate-name rejection", err)
+	}
+	_, err = New(Options{
+		Catalog:  stubCatalog{},
+		CacheDir: t.TempDir(),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WMSSources: []WMSSource{
+			{Name: "dup", BaseURL: "http://a", Layers: "L", GSD: 1, Attribution: "a"},
+		},
+		TileSources: []TileSource{},
+		ArcGISSources: []ArcGISSource{
+			{Name: "dup", BaseURL: "http://c/MapServer", GSD: 1, Attribution: "c"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate source name") {
+		t.Errorf("error %v, want duplicate-name rejection across arcgis", err)
+	}
+}
+
+func TestOrthoArcGIS(t *testing.T) {
+	payload := []byte("FAKEJPEG")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/export") {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(payload)
+	}))
+	defer ts.Close()
+
+	svc, err := New(Options{
+		Catalog:     stubCatalog{},
+		CacheDir:    t.TempDir(),
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WMSSources:  []WMSSource{},
+		TileSources: []TileSource{},
+		ArcGISSources: []ArcGISSource{
+			{Name: "ta", BaseURL: ts.URL + "/rest/services/DOF/MapServer", GSD: 0.26},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	res, err := svc.Ortho(context.Background(), OrthoRequest{
+		Lat: 46.0510, Lon: 14.5058, SizeKM: 0.5, Source: "ta", Px: 512,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CacheHit || res.Source != "ta" || res.SourceGSD != 0.26 ||
+		res.Width != 512 || res.ContentType != "image/jpeg" {
+		t.Errorf("result %+v", res)
+	}
+	got, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Error("cached bytes differ from the export response")
+	}
+
+	res, err = svc.Ortho(context.Background(), OrthoRequest{
+		Lat: 46.0510, Lon: 14.5058, SizeKM: 0.5, Source: "ta", Px: 512,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.CacheHit {
+		t.Error("second identical call must hit the cache")
 	}
 }

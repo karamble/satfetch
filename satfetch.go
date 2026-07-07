@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/karamble/satfetch/internal/arcgis"
 	"github.com/karamble/satfetch/internal/cache"
 	"github.com/karamble/satfetch/internal/cog"
 	"github.com/karamble/satfetch/internal/geo"
@@ -43,8 +44,9 @@ type Options struct {
 	TileConcurrency     int           // parallel range requests per build, default 4
 	HTTPClient          *http.Client  // pixel-data fetches
 	Logger              *slog.Logger
-	WMSSources          []WMSSource  // ortho sources; nil means BuiltinWMSSources()
-	TileSources         []TileSource // tile pyramids; nil means BuiltinTileSources()
+	WMSSources          []WMSSource    // ortho sources; nil means BuiltinWMSSources()
+	TileSources         []TileSource   // tile pyramids; nil means BuiltinTileSources()
+	ArcGISSources       []ArcGISSource // ArcGIS exports; nil means BuiltinArcGISSources()
 }
 
 // Result describes a finished product sitting in the cache.
@@ -70,6 +72,7 @@ type Service struct {
 	sem      chan struct{}
 	wms      map[string]WMSSource
 	tiles    map[string]TileSource
+	arcgis   map[string]ArcGISSource
 	names    []string // all source names, sorted
 
 	mu     sync.Mutex
@@ -109,9 +112,13 @@ func New(o Options) (*Service, error) {
 	if o.TileSources == nil {
 		o.TileSources = BuiltinTileSources()
 	}
+	if o.ArcGISSources == nil {
+		o.ArcGISSources = BuiltinArcGISSources()
+	}
 	wmsMap := make(map[string]WMSSource, len(o.WMSSources))
 	tileMap := make(map[string]TileSource, len(o.TileSources))
-	names := make([]string, 0, len(o.WMSSources)+len(o.TileSources))
+	arcgisMap := make(map[string]ArcGISSource, len(o.ArcGISSources))
+	names := make([]string, 0, len(o.WMSSources)+len(o.TileSources)+len(o.ArcGISSources))
 	for _, src := range o.WMSSources {
 		if src.Name == "" || src.BaseURL == "" {
 			return nil, fmt.Errorf("satfetch: WMS source needs a name and base URL")
@@ -144,6 +151,22 @@ func New(o Options) (*Service, error) {
 		tileMap[src.Name] = src
 		names = append(names, src.Name)
 	}
+	for _, src := range o.ArcGISSources {
+		if src.Name == "" || src.BaseURL == "" {
+			return nil, fmt.Errorf("satfetch: ArcGIS source needs a name and base URL")
+		}
+		if src.MaxPx <= 0 {
+			src.MaxPx = 4096
+		}
+		_, dupW := wmsMap[src.Name]
+		_, dupT := tileMap[src.Name]
+		_, dupA := arcgisMap[src.Name]
+		if dupW || dupT || dupA {
+			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		}
+		arcgisMap[src.Name] = src
+		names = append(names, src.Name)
+	}
 	sort.Strings(names)
 	c, err := cache.New(o.CacheDir, o.CacheMaxMB, o.Logger)
 	if err != nil {
@@ -159,6 +182,7 @@ func New(o Options) (*Service, error) {
 		sem:      make(chan struct{}, o.MaxConcurrentBuilds),
 		wms:      wmsMap,
 		tiles:    tileMap,
+		arcgis:   arcgisMap,
 		names:    names,
 		flight:   make(map[string]chan struct{}),
 	}, nil
@@ -180,8 +204,12 @@ func (s *Service) SourceCatalog() []SourceInfo {
 			out = append(out, SourceInfo{Name: name, Type: "wms", GSD: src.GSD, Attribution: src.Attribution})
 			continue
 		}
-		src := s.tiles[name]
-		out = append(out, SourceInfo{Name: name, Type: "tiles", GSD: src.GSD, Attribution: src.Attribution})
+		if src, ok := s.tiles[name]; ok {
+			out = append(out, SourceInfo{Name: name, Type: "tiles", GSD: src.GSD, Attribution: src.Attribution})
+			continue
+		}
+		src := s.arcgis[name]
+		out = append(out, SourceInfo{Name: name, Type: "arcgis", GSD: src.GSD, Attribution: src.Attribution})
 	}
 	return out
 }
@@ -357,8 +385,75 @@ func (s *Service) Ortho(ctx context.Context, r OrthoRequest) (*Result, error) {
 	if src, ok := s.tiles[r.Source]; ok {
 		return s.orthoTiles(ctx, r, src)
 	}
+	if src, ok := s.arcgis[r.Source]; ok {
+		return s.orthoArcGIS(ctx, r, src)
+	}
 	return nil, fmt.Errorf("%w: unknown source %q (available: %s)",
 		ErrInvalid, r.Source, strings.Join(s.names, ", "))
+}
+
+func (s *Service) orthoArcGIS(ctx context.Context, r OrthoRequest, src ArcGISSource) (*Result, error) {
+	px := min(r.Px, src.MaxPx)
+	key := cache.Key("v1-ortho", src.Name,
+		fmt.Sprintf("%.6f,%.6f", r.Lat, r.Lon),
+		fmt.Sprintf("%.3f", r.SizeKM),
+		fmt.Sprintf("%d", px),
+		string(r.Format))
+	ext := formatExt(r.Format)
+
+	path, _, _, fetched, hit, err := s.buildCached(ctx, key, ext,
+		func(ctx context.Context) (string, int, int, int64, error) {
+			return s.buildOrthoArcGIS(ctx, r, src, px, key, ext)
+		})
+	if err != nil {
+		return nil, err
+	}
+	if !hit {
+		s.log.Info("ortho built", "source", src.Name, "px", px,
+			"format", r.Format, "fetched_bytes", fetched)
+	}
+	return &Result{
+		Path: path, ContentType: formatContentType(r.Format),
+		Source: src.Name, SourceGSD: src.GSD,
+		CacheHit: hit, Width: px, Height: px, BytesFetched: fetched,
+	}, nil
+}
+
+func (s *Service) buildOrthoArcGIS(ctx context.Context, r OrthoRequest, src ArcGISSource, px int, key, ext string) (string, int, int, int64, error) {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", 0, 0, 0, ctx.Err()
+	}
+	defer func() { <-s.sem }()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	dLat, dLon, err := geo.AOIDegrees(r.Lat, r.Lon, r.SizeKM)
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	var fetched int64
+	path, err := s.cache.Put(key, ext, func(w io.Writer) error {
+		n, err := arcgis.Fetch(ctx, s.httpc, defaultUserAgent, arcgis.Request{
+			BaseURL: src.BaseURL,
+			MinLat:  r.Lat - dLat,
+			MinLon:  r.Lon - dLon,
+			MaxLat:  r.Lat + dLat,
+			MaxLon:  r.Lon + dLon,
+			Px:      px,
+			MIME:    formatContentType(r.Format),
+		}, w)
+		fetched = n
+		if err != nil {
+			return fmt.Errorf("%w: source %s: %v", ErrUpstream, src.Name, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, 0, fetched, err
+	}
+	return path, px, px, fetched, nil
 }
 
 func (s *Service) orthoWMS(ctx context.Context, r OrthoRequest, src WMSSource) (*Result, error) {

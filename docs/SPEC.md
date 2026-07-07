@@ -155,6 +155,16 @@ are unsupported. Source names share one namespace with the WMS registry
 (uniqueness enforced at Service construction) and /ortho dispatches by
 where the name resolves.
 
+### ArcGIS export sources
+
+`Options.ArcGISSources` registers keyless ArcGIS MapServer services whose
+export operation renders arbitrary boxes server-side (default:
+BuiltinArcGISSources() - Slovenia's GURS DOF hosted by ARSO, live-verified).
+The request is one GET: bbox in WGS84 lon,lat order with bboxSR=4326,
+size=WxH, format jpg|png, f=image. ArcGIS reports failures as HTTP 200 with
+a JSON body: any non-image content type is treated as an upstream error.
+Same retry policy, caching, px clamping and headers as the WMS path.
+
 ### Ortho WMS sources
 
 `Options.WMSSources` registers WMS 1.3.0 GetMap endpoints (default:
