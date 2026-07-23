@@ -4,7 +4,7 @@
 
 // Package geo projects WGS84 coordinates into UTM zones and derives crop
 // windows. Accuracy is sub-meter (Snyder 1987 series), far tighter than the
-// 10 m pixels the windows address.
+// pixels the windows address.
 package geo
 
 import (
@@ -19,12 +19,18 @@ const (
 )
 
 // LatLonToUTM projects a WGS84 coordinate into the UTM CRS identified by
-// epsg (326xx = north, 327xx = south).
+// epsg (326xx = WGS84 north, 327xx = WGS84 south, 269xx = NAD83 north).
+//
+// NAD83 is projected on the same WGS84 ellipsoid here: GRS80 and WGS84 differ
+// in flattening by well under a millimeter, and the NAD83 datum shift proper is
+// 1-2 m across the conterminous US. At the 0.3-1 m pixels of NAIP, the imagery
+// this affects, that is a two-to-three pixel offset - acceptable for a visual
+// product, but not a substitute for a real datum transformation.
 func LatLonToUTM(epsg int, lat, lon float64) (easting, northing float64, err error) {
 	zone := epsg % 100
 	south := false
 	switch epsg / 100 {
-	case 326:
+	case 326, 269:
 	case 327:
 		south = true
 	default:

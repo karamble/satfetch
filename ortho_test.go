@@ -226,7 +226,8 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 	defer svc.Close()
 
 	catalog := svc.SourceCatalog()
-	if want := len(BuiltinWMSSources()) + len(BuiltinTileSources()) + len(BuiltinArcGISSources()); len(catalog) != want {
+	if want := len(BuiltinWMSSources()) + len(BuiltinTileSources()) +
+		len(BuiltinArcGISSources()) + len(BuiltinSTACSources()); len(catalog) != want {
 		t.Fatalf("builtin sources %d, want %d", len(catalog), want)
 	}
 	seen := make(map[string]string)
@@ -235,7 +236,7 @@ func TestOrthoDefaultRegistry(t *testing.T) {
 		if src.Name == "" || src.GSD <= 0 || src.Attribution == "" {
 			t.Errorf("incomplete source %+v", src)
 		}
-		if src.Type != "wms" && src.Type != "tiles" && src.Type != "arcgis" {
+		if src.Type != "wms" && src.Type != "tiles" && src.Type != "arcgis" && src.Type != "stac" {
 			t.Errorf("source %q has type %q", src.Name, src.Type)
 		}
 		if _, dup := seen[src.Name]; dup {

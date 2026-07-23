@@ -17,16 +17,18 @@ import (
 	"github.com/karamble/satfetch/internal/cog"
 )
 
-// TrueColor converts a 3-sample uint8 raster into an opaque image.
+// TrueColor converts a uint8 raster into an opaque image from its first three
+// samples. A fourth sample, the near-infrared band of RGB+NIR imagery such as
+// NAIP, is ignored.
 func TrueColor(r *cog.Raster) (*image.NRGBA, error) {
-	if r.Bits != 8 || r.SPP != 3 {
-		return nil, fmt.Errorf("render: expected 8-bit RGB raster, have %d-bit x%d", r.Bits, r.SPP)
+	if r.Bits != 8 || (r.SPP != 3 && r.SPP != 4) {
+		return nil, fmt.Errorf("render: expected 8-bit RGB or RGB+NIR raster, have %d-bit x%d", r.Bits, r.SPP)
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, r.W, r.H))
 	for i := 0; i < r.W*r.H; i++ {
-		img.Pix[i*4+0] = r.U8[i*3+0]
-		img.Pix[i*4+1] = r.U8[i*3+1]
-		img.Pix[i*4+2] = r.U8[i*3+2]
+		img.Pix[i*4+0] = r.U8[i*r.SPP+0]
+		img.Pix[i*4+1] = r.U8[i*r.SPP+1]
+		img.Pix[i*4+2] = r.U8[i*r.SPP+2]
 		img.Pix[i*4+3] = 0xff
 	}
 	return img, nil

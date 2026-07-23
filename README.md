@@ -78,7 +78,9 @@ Success responses carry `X-Source`, `X-Source-GSD` and `X-Cache`. Built-in
 sources (every entry verified with a live keyless fetch). WMS sources pass
 the server-rendered image through; tile sources mosaic and crop WebMercator
 pyramid tiles client-side and re-encode (jpeg quality 85), with output
-bounded by `px` (the result lands between px/2 and px per side):
+bounded by `px` (the result lands between px/2 and px per side); `stac`
+sources read COGs by range request the same way `/image` does, and also
+report `X-Scene-ID` and `X-Scene-Datetime` for the item they served:
 
 | name | type | coverage | native GSD | data |
 |---|---|---|---|---|
@@ -115,14 +117,24 @@ bounded by `px` (the result lands between px/2 and px per side):
 | `za` | tiles | South Africa | 0.25 m | NGI via openstreetmap.org.za |
 | `si` | arcgis | Slovenia | 0.26 m | GURS DOF via ARSO |
 | `au-nsw` | arcgis | Australia, New South Wales | ~0.10 m | NSW Spatial Services, CC BY 4.0 |
+| `us-naip` | stac | USA (CONUS + PR) | 0.3-1 m | USDA NAIP via Microsoft Planetary Computer, public domain |
 
 Orthophotos are flown on multi-year cycles (not current like Sentinel-2), and
 requests outside a source's coverage come back blank. For native detail keep
 `size_km * 1000 / px` near the source GSD. Library callers can register any
 WMS 1.3.0 endpoint that serves EPSG:4326 via `Options.WMSSources`, any
 WebMercator tile pyramid (WMTS/XYZ templates with `{z}/{x}/{y}`, TMS via
-`{-y}`) via `Options.TileSources`, and any keyless ArcGIS MapServer export
-endpoint via `Options.ArcGISSources`.
+`{-y}`) via `Options.TileSources`, any keyless ArcGIS MapServer export
+endpoint via `Options.ArcGISSources`, and any STAC collection of RGB or
+RGB+NIR COGs via `Options.STACSources`.
+
+`us-naip` reads one catalog item per request, and NAIP quads are only about
+6 x 7 km, so a window straddling a quad boundary is clipped to the covering
+quad rather than mosaicked - keep `size_km` small near edges. Its GSD varies
+by state and flight year (0.3 m in much of the northeast, 0.6 m elsewhere),
+and `X-Source-GSD` reports what the served item actually carries. The older
+`us` WMS source covers the same program through USGS and needs no item
+lookup; `us-naip` is finer where 0.3 m flights exist and names its item.
 
 Countries and regions checked but not included, and why: Denmark, Finland,
 Norway and Lithuania gate their services behind (free) tokens or accounts;

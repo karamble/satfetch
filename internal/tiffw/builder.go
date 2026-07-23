@@ -16,7 +16,7 @@ import (
 type COGSpec struct {
 	Width, Height int
 	TileSize      int
-	SPP           int // 1 or 3
+	SPP           int // 1, 3 or 4
 	Bits          int // 8 or 16
 	Levels        []int
 	Geo           Geo
@@ -80,7 +80,7 @@ func WriteCOG(w io.Writer, s COGSpec) error {
 			sf[i] = 1
 		}
 		photo := 1
-		if s.SPP == 3 {
+		if s.SPP >= 3 {
 			photo = 2
 		}
 		tags := []tag{

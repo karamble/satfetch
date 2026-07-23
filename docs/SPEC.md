@@ -130,10 +130,12 @@ Success headers: `X-Scene-ID`, `X-Scene-Datetime` (RFC3339),
 `/ortho` parameters: `lat`, `lon` (required), `source` (required, a
 registry name from `/sources`), `size_km` (1, 0.1..10), `px` (1024,
 64..4096, output width and height; clamped to the source's server cap),
-`format` (`jpeg` default | `png`). The WMS server renders the window, so
-there is no scene, no cloud filter, no NDVI and no GeoTIFF here; success
-headers are `X-Source`, `X-Source-GSD` and `X-Cache`. `/sources` returns
-`{"sources":[{"name","gsd","attribution"}]}`.
+`format` (`jpeg` default | `png`). There is no cloud filter, no NDVI and no
+GeoTIFF here; success headers are `X-Source`, `X-Source-GSD` and `X-Cache`,
+plus `X-Scene-ID` and `X-Scene-Datetime` for STAC sources, which resolve a
+catalog item. `/sources` returns
+`{"sources":[{"name","type","gsd","attribution"}]}`, where type is `wms`,
+`tiles`, `arcgis` or `stac`.
 
 `/healthz` returns `{"status":"ok"}` checking nothing external. `/metrics`
 returns plain-text counters: requests by endpoint/status, cache hits, build
@@ -154,6 +156,45 @@ png or jpeg (quality 85). Latitudes beyond 85.05 and non-WebMercator grids
 are unsupported. Source names share one namespace with the WMS registry
 (uniqueness enforced at Service construction) and /ortho dispatches by
 where the name resolves.
+
+### STAC COG sources
+
+`Options.STACSources` registers orthophoto collections published as COGs
+behind a STAC catalog (default: BuiltinSTACSources() - USDA NAIP hosted by
+Microsoft Planetary Computer, live-verified). Unlike the rendered source
+types nothing is rasterized upstream: the source searches for the newest
+item covering the point, then reads its COG through the same range-request
+path `/image` uses.
+
+NAIP specifics, probed 2026-07-24. The Earth Search copy is unusable -
+`storage:requester_pays` is true, hrefs are `s3://naip-analytic/...` and
+anonymous reads return 403. The Planetary Computer copy is keyless: STAC at
+`https://planetarycomputer.microsoft.com/api/stac/v1`, collection `naip`,
+asset `image`, hrefs on `naipeuwest.blob.core.windows.net`. Its COGs are
+classic little-endian TIFF, DEFLATE, predictor 2, chunky, 512x512 tiles,
+8-bit, **four samples per pixel** (R,G,B,NIR) with overviews; true color
+takes the leading three and drops NIR. Items are projected in NAD83 UTM
+(EPSG:269xx), not the WGS84 326xx codes the Sentinel-2 path sees - the
+projector treats NAD83 as WGS84, a 1-2 m datum offset, or two to three
+pixels at 0.6 m. Items carry no `eo:cloud_cover`, so the search omits that
+filter, and the lookback defaults to ten years rather than days. Coverage is
+CONUS plus Puerto Rico; Alaska and Hawaii return nothing. GSD varies per
+item (0.3, 0.6 or 1.0 m) and the item's own value is reported.
+
+Blob hrefs are signed through the `HrefHook` seam: the keyless endpoint
+`https://planetarycomputer.microsoft.com/api/sas/v1/token/naip` hands out a
+shared access signature valid about an hour, cached in memory and renewed
+five minutes before expiry. Only `*.blob.core.windows.net` hrefs are signed;
+catalog items also reference the Planetary Computer API itself, which must
+be left alone.
+
+The item is resolved before the cache lookup and its ID is part of the cache
+key, so a new flight year yields a new key instead of stale pixels - one
+STAC roundtrip per request, which the rendered source types do not pay. NAIP
+quads are about 6 x 7 km and only one item is read, so a window crossing a
+quad boundary is clipped by the grid rather than mosaicked. Source names
+share the one registry namespace and /ortho dispatches by where the name
+resolves.
 
 ### ArcGIS export sources
 

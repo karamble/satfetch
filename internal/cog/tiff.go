@@ -395,7 +395,9 @@ func (f *File) buildIFD(ctx context.Context, raw ifdRaw) (IFD, error) {
 	if ifd.Predictor != 1 && (ifd.Predictor != 2 || ifd.Bits == 32) {
 		return ifd, fmt.Errorf("cog: unsupported predictor %d", ifd.Predictor)
 	}
-	if ifd.SPP != 1 && ifd.SPP != 3 {
+	// 4 samples covers RGB+NIR imagery such as NAIP; readers take the
+	// leading bands and ignore the rest.
+	if ifd.SPP != 1 && ifd.SPP != 3 && ifd.SPP != 4 {
 		return ifd, fmt.Errorf("cog: unsupported samples per pixel %d", ifd.SPP)
 	}
 	if ifd.TileWidth <= 0 || ifd.TileHeight <= 0 || ifd.TileWidth > 1<<14 || ifd.TileHeight > 1<<14 {

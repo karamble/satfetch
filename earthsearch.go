@@ -20,9 +20,9 @@ import (
 // best-effort.
 const DefaultSTACURL = "https://earth-search.aws.element84.com/v1"
 
-// collection is the complete Sentinel-2 L2A COG collection (the newer
+// DefaultCollection is the complete Sentinel-2 L2A COG collection (the newer
 // sentinel-2-c1-l2a collection has historical gaps).
-const collection = "sentinel-2-l2a"
+const DefaultCollection = "sentinel-2-l2a"
 
 const defaultUserAgent = "satfetch/0.1 (+https://github.com/karamble/satfetch)"
 
@@ -30,8 +30,12 @@ const defaultUserAgent = "satfetch/0.1 (+https://github.com/karamble/satfetch)"
 // defaults.
 type EarthSearchOptions struct {
 	BaseURL    string
+	Collection string // default DefaultCollection
 	UserAgent  string
 	HTTPClient *http.Client
+	// NoCloudFilter drops the eo:cloud_cover search term, for collections
+	// whose items carry no cloud metadata (aerial imagery such as NAIP).
+	NoCloudFilter bool
 	// HrefHook post-processes asset hrefs, the seam for catalogs that
 	// require URL signing. Identity when nil.
 	HrefHook func(string) (string, error)
@@ -39,15 +43,20 @@ type EarthSearchOptions struct {
 
 // EarthSearch implements Catalog against a STAC Item Search endpoint.
 type EarthSearch struct {
-	base string
-	ua   string
-	c    *http.Client
-	hook func(string) (string, error)
+	base       string
+	collection string
+	ua         string
+	c          *http.Client
+	noCloud    bool
+	hook       func(string) (string, error)
 }
 
 func NewEarthSearch(o EarthSearchOptions) *EarthSearch {
 	if o.BaseURL == "" {
 		o.BaseURL = DefaultSTACURL
+	}
+	if o.Collection == "" {
+		o.Collection = DefaultCollection
 	}
 	if o.UserAgent == "" {
 		o.UserAgent = defaultUserAgent
@@ -56,10 +65,12 @@ func NewEarthSearch(o EarthSearchOptions) *EarthSearch {
 		o.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &EarthSearch{
-		base: strings.TrimRight(o.BaseURL, "/"),
-		ua:   o.UserAgent,
-		c:    o.HTTPClient,
-		hook: o.HrefHook,
+		base:       strings.TrimRight(o.BaseURL, "/"),
+		collection: o.Collection,
+		ua:         o.UserAgent,
+		c:          o.HTTPClient,
+		noCloud:    o.NoCloudFilter,
+		hook:       o.HrefHook,
 	}
 }
 
@@ -98,11 +109,13 @@ func (e *EarthSearch) Search(ctx context.Context, q Query) ([]Scene, error) {
 		limit = 50
 	}
 	body := stacSearch{
-		Collections: []string{collection},
+		Collections: []string{e.collection},
 		Intersects:  &geoPoint{Type: "Point", Coordinates: [2]float64{q.Lon, q.Lat}},
 		Datetime:    start.Format(time.RFC3339) + "/" + end.Format(time.RFC3339),
-		Query:       map[string]any{"eo:cloud_cover": map[string]float64{"lt": q.MaxCloud}},
 		Limit:       limit,
+	}
+	if !e.noCloud {
+		body.Query = map[string]any{"eo:cloud_cover": map[string]float64{"lt": q.MaxCloud}}
 	}
 	scenes, err := e.search(ctx, body)
 	if err != nil {
@@ -115,7 +128,7 @@ func (e *EarthSearch) Search(ctx context.Context, q Query) ([]Scene, error) {
 // Get implements Catalog.
 func (e *EarthSearch) Get(ctx context.Context, id string) (Scene, error) {
 	scenes, err := e.search(ctx, stacSearch{
-		Collections: []string{collection},
+		Collections: []string{e.collection},
 		IDs:         []string{id},
 		Limit:       1,
 	})
@@ -202,6 +215,9 @@ func (e *EarthSearch) toScene(it stacItem) (Scene, error) {
 	}
 	if v, ok := it.Properties["eo:cloud_cover"].(float64); ok {
 		sc.CloudCover = v
+	}
+	if v, ok := it.Properties["gsd"].(float64); ok {
+		sc.GSD = v
 	}
 	if v, ok := it.Properties["proj:epsg"].(float64); ok {
 		sc.EPSG = int(v)

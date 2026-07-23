@@ -28,6 +28,7 @@ import (
 	"github.com/karamble/satfetch/internal/cache"
 	"github.com/karamble/satfetch/internal/cog"
 	"github.com/karamble/satfetch/internal/geo"
+	"github.com/karamble/satfetch/internal/pcsign"
 	"github.com/karamble/satfetch/internal/render"
 	"github.com/karamble/satfetch/internal/tiffw"
 	"github.com/karamble/satfetch/internal/tiles"
@@ -47,6 +48,7 @@ type Options struct {
 	WMSSources          []WMSSource    // ortho sources; nil means BuiltinWMSSources()
 	TileSources         []TileSource   // tile pyramids; nil means BuiltinTileSources()
 	ArcGISSources       []ArcGISSource // ArcGIS exports; nil means BuiltinArcGISSources()
+	STACSources         []STACSource   // STAC COG collections; nil means BuiltinSTACSources()
 }
 
 // Result describes a finished product sitting in the cache.
@@ -73,6 +75,7 @@ type Service struct {
 	wms      map[string]WMSSource
 	tiles    map[string]TileSource
 	arcgis   map[string]ArcGISSource
+	stac     map[string]stacOrtho
 	names    []string // all source names, sorted
 
 	mu     sync.Mutex
@@ -115,10 +118,25 @@ func New(o Options) (*Service, error) {
 	if o.ArcGISSources == nil {
 		o.ArcGISSources = BuiltinArcGISSources()
 	}
+	if o.STACSources == nil {
+		o.STACSources = BuiltinSTACSources()
+	}
 	wmsMap := make(map[string]WMSSource, len(o.WMSSources))
 	tileMap := make(map[string]TileSource, len(o.TileSources))
 	arcgisMap := make(map[string]ArcGISSource, len(o.ArcGISSources))
-	names := make([]string, 0, len(o.WMSSources)+len(o.TileSources)+len(o.ArcGISSources))
+	stacMap := make(map[string]stacOrtho, len(o.STACSources))
+	names := make([]string, 0, len(o.WMSSources)+len(o.TileSources)+len(o.ArcGISSources)+len(o.STACSources))
+	// claim reserves a source name across every source type, so the
+	// namespace the Ortho lookup walks stays unambiguous.
+	claim := func(name string) error {
+		for _, taken := range names {
+			if taken == name {
+				return fmt.Errorf("satfetch: duplicate source name %q", name)
+			}
+		}
+		names = append(names, name)
+		return nil
+	}
 	for _, src := range o.WMSSources {
 		if src.Name == "" || src.BaseURL == "" {
 			return nil, fmt.Errorf("satfetch: WMS source needs a name and base URL")
@@ -126,11 +144,10 @@ func New(o Options) (*Service, error) {
 		if src.MaxPx <= 0 {
 			src.MaxPx = 4096
 		}
-		if _, dup := wmsMap[src.Name]; dup {
-			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		if err := claim(src.Name); err != nil {
+			return nil, err
 		}
 		wmsMap[src.Name] = src
-		names = append(names, src.Name)
 	}
 	for _, src := range o.TileSources {
 		if src.Name == "" || src.URLTemplate == "" {
@@ -142,14 +159,10 @@ func New(o Options) (*Service, error) {
 		if src.MaxZoom <= 0 {
 			src.MaxZoom = 19
 		}
-		if _, dup := wmsMap[src.Name]; dup {
-			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
-		}
-		if _, dup := tileMap[src.Name]; dup {
-			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		if err := claim(src.Name); err != nil {
+			return nil, err
 		}
 		tileMap[src.Name] = src
-		names = append(names, src.Name)
 	}
 	for _, src := range o.ArcGISSources {
 		if src.Name == "" || src.BaseURL == "" {
@@ -158,14 +171,33 @@ func New(o Options) (*Service, error) {
 		if src.MaxPx <= 0 {
 			src.MaxPx = 4096
 		}
-		_, dupW := wmsMap[src.Name]
-		_, dupT := tileMap[src.Name]
-		_, dupA := arcgisMap[src.Name]
-		if dupW || dupT || dupA {
-			return nil, fmt.Errorf("satfetch: duplicate source name %q", src.Name)
+		if err := claim(src.Name); err != nil {
+			return nil, err
 		}
 		arcgisMap[src.Name] = src
-		names = append(names, src.Name)
+	}
+	for _, src := range o.STACSources {
+		if src.Name == "" || src.STACURL == "" || src.Collection == "" || src.Asset == "" {
+			return nil, fmt.Errorf("satfetch: STAC source needs a name, STAC URL, collection and asset")
+		}
+		if src.MaxPx <= 0 {
+			src.MaxPx = 4096
+		}
+		if src.Days <= 0 {
+			src.Days = 3650
+		}
+		if err := claim(src.Name); err != nil {
+			return nil, err
+		}
+		opts := EarthSearchOptions{
+			BaseURL:       src.STACURL,
+			Collection:    src.Collection,
+			NoCloudFilter: true,
+		}
+		if src.SignTokenURL != "" {
+			opts.HrefHook = pcsign.New(src.SignTokenURL, defaultUserAgent, nil).Sign
+		}
+		stacMap[src.Name] = stacOrtho{src: src, cat: NewEarthSearch(opts)}
 	}
 	sort.Strings(names)
 	c, err := cache.New(o.CacheDir, o.CacheMaxMB, o.Logger)
@@ -183,6 +215,7 @@ func New(o Options) (*Service, error) {
 		wms:      wmsMap,
 		tiles:    tileMap,
 		arcgis:   arcgisMap,
+		stac:     stacMap,
 		names:    names,
 		flight:   make(map[string]chan struct{}),
 	}, nil
@@ -206,6 +239,10 @@ func (s *Service) SourceCatalog() []SourceInfo {
 		}
 		if src, ok := s.tiles[name]; ok {
 			out = append(out, SourceInfo{Name: name, Type: "tiles", GSD: src.GSD, Attribution: src.Attribution})
+			continue
+		}
+		if so, ok := s.stac[name]; ok {
+			out = append(out, SourceInfo{Name: name, Type: "stac", GSD: so.src.GSD, Attribution: so.src.Attribution})
 			continue
 		}
 		src := s.arcgis[name]
@@ -388,8 +425,114 @@ func (s *Service) Ortho(ctx context.Context, r OrthoRequest) (*Result, error) {
 	if src, ok := s.arcgis[r.Source]; ok {
 		return s.orthoArcGIS(ctx, r, src)
 	}
+	if so, ok := s.stac[r.Source]; ok {
+		return s.orthoSTAC(ctx, r, so)
+	}
 	return nil, fmt.Errorf("%w: unknown source %q (available: %s)",
 		ErrInvalid, r.Source, strings.Join(s.names, ", "))
+}
+
+// stacOrtho pairs a STAC orthophoto source with the catalog client bound to
+// its collection.
+type stacOrtho struct {
+	src STACSource
+	cat *EarthSearch
+}
+
+// resolveSTACItem picks the newest item covering the point that carries the
+// source's COG asset.
+func (s *Service) resolveSTACItem(ctx context.Context, r OrthoRequest, so stacOrtho) (Scene, error) {
+	scenes, err := so.cat.Search(ctx, Query{
+		Lon: r.Lon, Lat: r.Lat, MaxCloud: 100, Days: so.src.Days, Limit: 50,
+	})
+	if err != nil {
+		return Scene{}, err
+	}
+	for _, sc := range scenes {
+		if sc.Assets[so.src.Asset] != "" {
+			return sc, nil
+		}
+	}
+	return Scene{}, fmt.Errorf("%w: source %s covers no imagery at %.4f,%.4f",
+		ErrNoScene, so.src.Name, r.Lat, r.Lon)
+}
+
+// orthoSTAC serves an orthophoto window by reading the COG of the newest
+// catalog item covering the point. Unlike the rendered sources the item is
+// resolved before the cache lookup, so a fresh flight year produces a fresh
+// key rather than serving stale pixels.
+func (s *Service) orthoSTAC(ctx context.Context, r OrthoRequest, so stacOrtho) (*Result, error) {
+	px := min(r.Px, so.src.MaxPx)
+	scene, err := s.resolveSTACItem(ctx, r, so)
+	if err != nil {
+		return nil, err
+	}
+	key := cache.Key("v1-ortho", so.src.Name, scene.ID,
+		fmt.Sprintf("%.6f,%.6f", r.Lat, r.Lon),
+		fmt.Sprintf("%.3f", r.SizeKM),
+		fmt.Sprintf("%d", px),
+		string(r.Format))
+	ext := formatExt(r.Format)
+
+	path, w, h, fetched, hit, err := s.buildCached(ctx, key, ext,
+		func(ctx context.Context) (string, int, int, int64, error) {
+			return s.buildOrthoSTAC(ctx, r, so, scene, px, key, ext)
+		})
+	if err != nil {
+		return nil, err
+	}
+	if hit {
+		w, h = imageDims(path, r.Format)
+	} else {
+		s.log.Info("ortho built", "source", so.src.Name, "item", scene.ID,
+			"size", fmt.Sprintf("%dx%d", w, h), "format", r.Format, "fetched_bytes", fetched)
+	}
+	gsd := scene.GSD
+	if gsd == 0 {
+		gsd = so.src.GSD
+	}
+	return &Result{
+		Path: path, ContentType: formatContentType(r.Format),
+		Scene: scene, Source: so.src.Name, SourceGSD: gsd,
+		CacheHit: hit, Width: w, Height: h, BytesFetched: fetched,
+	}, nil
+}
+
+func (s *Service) buildOrthoSTAC(ctx context.Context, r OrthoRequest, so stacOrtho, scene Scene, px int, key, ext string) (string, int, int, int64, error) {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", 0, 0, 0, ctx.Err()
+	}
+	defer func() { <-s.sem }()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	f, src, err := s.openAsset(ctx, scene, so.src.Asset)
+	if err != nil {
+		return "", 0, 0, 0, err
+	}
+	level, x0, y0, w, h, _, err := s.window(f, scene, r.Lat, r.Lon, r.SizeKM, px)
+	if err != nil {
+		return "", 0, 0, src.BytesFetched(), err
+	}
+	ras, err := f.ReadWindow(ctx, level, x0, y0, w, h, s.tileConc)
+	if err != nil {
+		return "", 0, 0, src.BytesFetched(), fmt.Errorf("%w: %v", ErrUpstream, err)
+	}
+	img, err := render.TrueColor(ras)
+	if err != nil {
+		return "", 0, 0, src.BytesFetched(), err
+	}
+	writeOut := func(out io.Writer) error { return render.EncodePNG(out, img) }
+	if r.Format == FormatJPEG {
+		writeOut = func(out io.Writer) error { return render.EncodeJPEG(out, img, 85) }
+	}
+	path, err := s.cache.Put(key, ext, writeOut)
+	if err != nil {
+		return "", 0, 0, src.BytesFetched(), err
+	}
+	return path, ras.W, ras.H, src.BytesFetched(), nil
 }
 
 func (s *Service) orthoArcGIS(ctx context.Context, r OrthoRequest, src ArcGISSource) (*Result, error) {
@@ -627,9 +770,9 @@ func (s *Service) openAsset(ctx context.Context, scene Scene, asset string) (*co
 	return f, src, nil
 }
 
-// window derives the pixel window of the request on the file, choosing the
-// overview level that keeps the output within MaxPx.
-func (s *Service) window(f *cog.File, scene Scene, r ImageRequest) (level, x0, y0, w, h int, lg cog.Grid, err error) {
+// window derives the pixel window of a sizeKM square centered on lat/lon on
+// the file, choosing the overview level that keeps the output within maxPx.
+func (s *Service) window(f *cog.File, scene Scene, lat, lon, sizeKM float64, maxPx int) (level, x0, y0, w, h int, lg cog.Grid, err error) {
 	epsg := f.Grid.EPSG
 	if epsg == 0 {
 		epsg = scene.EPSG
@@ -637,7 +780,7 @@ func (s *Service) window(f *cog.File, scene Scene, r ImageRequest) (level, x0, y
 	if epsg == 0 {
 		return 0, 0, 0, 0, 0, lg, fmt.Errorf("%w: scene %s has no CRS", ErrUpstream, scene.ID)
 	}
-	minX, minY, maxX, maxY, err := geo.AOIBBox(epsg, r.Lat, r.Lon, r.SizeKM)
+	minX, minY, maxX, maxY, err := geo.AOIBBox(epsg, lat, lon, sizeKM)
 	if err != nil {
 		return 0, 0, 0, 0, 0, lg, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -646,7 +789,7 @@ func (s *Service) window(f *cog.File, scene Scene, r ImageRequest) (level, x0, y
 	if !ok {
 		return 0, 0, 0, 0, 0, lg, ErrOutsideScene
 	}
-	level = f.PickLevel(r.MaxPx, fw, fh)
+	level = f.PickLevel(maxPx, fw, fh)
 	lg = f.LevelGrid(level)
 	x0, y0, w, h, ok = lg.Window(f.IFDs[level].Width, f.IFDs[level].Height, minX, minY, maxX, maxY)
 	if !ok {
@@ -672,7 +815,7 @@ func (s *Service) buildImage(ctx context.Context, r ImageRequest, scene Scene, k
 	if err != nil {
 		return "", 0, 0, 0, err
 	}
-	level, x0, y0, w, h, lg, err := s.window(f, scene, r)
+	level, x0, y0, w, h, lg, err := s.window(f, scene, r.Lat, r.Lon, r.SizeKM, r.MaxPx)
 	if err != nil {
 		return "", 0, 0, src.BytesFetched(), err
 	}
@@ -715,7 +858,7 @@ func (s *Service) buildNDVI(ctx context.Context, r ImageRequest, scene Scene, ke
 		return "", 0, 0, srcRed.BytesFetched(), err
 	}
 	fetched := func() int64 { return srcRed.BytesFetched() + srcNir.BytesFetched() }
-	level, x0, y0, w, h, lg, err := s.window(fRed, scene, r)
+	level, x0, y0, w, h, lg, err := s.window(fRed, scene, r.Lat, r.Lon, r.SizeKM, r.MaxPx)
 	if err != nil {
 		return "", 0, 0, fetched(), err
 	}

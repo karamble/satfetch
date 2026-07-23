@@ -138,6 +138,7 @@ func newAPI(t *testing.T, cat satfetch.Catalog, wmsSources ...satfetch.WMSSource
 		WMSSources:    wmsSources,
 		TileSources:   []satfetch.TileSource{},
 		ArcGISSources: []satfetch.ArcGISSource{},
+		STACSources:   []satfetch.STACSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -404,6 +405,7 @@ func newAPIWithTiles(t *testing.T, cat satfetch.Catalog, tileSources ...satfetch
 		WMSSources:    []satfetch.WMSSource{},
 		TileSources:   tileSources,
 		ArcGISSources: []satfetch.ArcGISSource{},
+		STACSources:   []satfetch.STACSource{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -412,6 +414,154 @@ func newAPIWithTiles(t *testing.T, cat satfetch.Catalog, tileSources ...satfetch
 	ts := httptest.NewServer(httpapi.New(svc, log))
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+func newAPIWithSTAC(t *testing.T, stacSources ...satfetch.STACSource) *httptest.Server {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc, err := satfetch.New(satfetch.Options{
+		Catalog:       &fakeCatalog{},
+		CacheDir:      t.TempDir(),
+		Logger:        log,
+		WMSSources:    []satfetch.WMSSource{},
+		TileSources:   []satfetch.TileSource{},
+		ArcGISSources: []satfetch.ArcGISSource{},
+		STACSources:   stacSources,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	ts := httptest.NewServer(httpapi.New(svc, log))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// NAIP-shaped fixture: NAD83 UTM zone 19, 0.3 m pixels, four uint8 bands
+// where the fourth is near-infrared and must not reach the output.
+const (
+	naipLat  = 42.3601
+	naipLon  = -71.0589
+	naipEPSG = 26919
+)
+
+// fixtureSTACSource stands up a STAC endpoint and a COG host, and returns the
+// source pointing at them.
+func fixtureSTACSource(t *testing.T) satfetch.STACSource {
+	t.Helper()
+	e, n, err := geo.LatLonToUTM(naipEPSG, naipLat, naipLon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const dim = 512
+	// Distinct constant bands: NIR is brightest, so a band-ordering slip
+	// shows up as the wrong channel rather than a plausible image.
+	pix := make([]uint8, dim*dim*4)
+	for i := 0; i < dim*dim; i++ {
+		pix[i*4+0] = 10
+		pix[i*4+1] = 20
+		pix[i*4+2] = 30
+		pix[i*4+3] = 240
+	}
+	var buf bytes.Buffer
+	if err := tiffw.WriteCOG(&buf, tiffw.COGSpec{
+		Width: dim, Height: dim, TileSize: 128, SPP: 4, Bits: 8,
+		Levels: []int{1, 2}, Pix8: pix,
+		Geo: tiffw.Geo{
+			ScaleX: 0.3, ScaleY: 0.3,
+			OriginX: e - dim/2*0.3, OriginY: n + dim/2*0.3,
+			KeyDir: []uint16{1, 1, 0, 1, 3072, 0, 1, naipEPSG},
+			Ascii:  "NAD83 / UTM zone 19N|NAD83|",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cog := buf.Bytes()
+
+	assets := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "", time.Now(), bytes.NewReader(cog))
+	}))
+	t.Cleanup(assets.Close)
+
+	stac := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if q, ok := body["query"]; ok && q != nil {
+			t.Errorf("cloud filter sent to a collection without cloud metadata: %v", q)
+		}
+		fmt.Fprintf(w, `{"features":[{"id":"ma_test_2023","properties":{`+
+			`"datetime":"2023-07-07T16:00:00Z","gsd":0.3,"proj:epsg":%d},`+
+			`"assets":{"image":{"href":%q}}}]}`, naipEPSG, assets.URL+"/a.tif")
+	}))
+	t.Cleanup(stac.Close)
+
+	return satfetch.STACSource{
+		Name: "nt", STACURL: stac.URL, Collection: "naip", Asset: "image",
+		GSD: 0.6, Attribution: "stac test",
+	}
+}
+
+func TestOrthoSTACEndpoint(t *testing.T) {
+	ts := newAPIWithSTAC(t, fixtureSTACSource(t))
+
+	url := fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=nt&size_km=0.1&px=512", ts.URL, naipLat, naipLon)
+	resp, body := get(t, url)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("content type %s", ct)
+	}
+	if got := resp.Header.Get("X-Source"); got != "nt" {
+		t.Errorf("X-Source %q", got)
+	}
+	// The item reports 0.3, which must win over the source's nominal 0.6.
+	if got := resp.Header.Get("X-Source-GSD"); got != "0.3" {
+		t.Errorf("X-Source-GSD %q, want 0.3", got)
+	}
+	if got := resp.Header.Get("X-Scene-ID"); got != "ma_test_2023" {
+		t.Errorf("X-Scene-ID %q", got)
+	}
+	if got := resp.Header.Get("X-Cache"); got != "MISS" {
+		t.Errorf("X-Cache %q", got)
+	}
+	img, _, err := image.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() < 300 || b.Dy() < 300 {
+		t.Errorf("image %dx%d, want roughly 100m at 0.3m", b.Dx(), b.Dy())
+	}
+	// RGB survives, NIR is dropped: a raster read as RGB+A or shifted by a
+	// band would land far from these values.
+	r, g, b, _ := img.At(img.Bounds().Dx()/2, img.Bounds().Dy()/2).RGBA()
+	for i, got := range []uint32{r >> 8, g >> 8, b >> 8} {
+		if want := uint32([]int{10, 20, 30}[i]); got < want-4 || got > want+4 {
+			t.Errorf("channel %d = %d, want about %d (NIR leaked?)", i, got, want)
+		}
+	}
+
+	resp, _ = get(t, url)
+	if got := resp.Header.Get("X-Cache"); got != "HIT" {
+		t.Errorf("second request X-Cache %q, want HIT", got)
+	}
+}
+
+func TestOrthoSTACNoCoverage(t *testing.T) {
+	stac := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"features":[]}`))
+	}))
+	t.Cleanup(stac.Close)
+	ts := newAPIWithSTAC(t, satfetch.STACSource{
+		Name: "nt", STACURL: stac.URL, Collection: "naip", Asset: "image",
+		GSD: 0.6, Attribution: "stac test",
+	})
+
+	url := fmt.Sprintf("%s/ortho?lat=%f&lon=%f&source=nt", ts.URL, naipLat, naipLon)
+	resp, body := get(t, url)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
 }
 
 func TestOrthoTilesEndpoint(t *testing.T) {

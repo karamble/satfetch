@@ -86,6 +86,22 @@ func TestLatLonToUTMSceneCentroid(t *testing.T) {
 	}
 }
 
+// NAIP is published on NAD83 UTM. The probed item
+// ca_m_3712213_se_10_060_20220518 reports proj:centroid 37.78126,-122.40624
+// and proj:bbox 549312,4178028..555258,4185396 in EPSG:26910.
+func TestLatLonToUTMNAD83(t *testing.T) {
+	e, n, err := LatLonToUTM(26910, 37.78126, -122.40624)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e < 549312 || e > 555258 {
+		t.Errorf("easting %f outside quad extent", e)
+	}
+	if n < 4178028 || n > 4185396 {
+		t.Errorf("northing %f outside quad extent", n)
+	}
+}
+
 func TestLatLonToUTMErrors(t *testing.T) {
 	tests := []struct {
 		name     string

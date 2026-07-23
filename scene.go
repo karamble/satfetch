@@ -15,6 +15,7 @@ type Scene struct {
 	Datetime   time.Time
 	CloudCover float64
 	EPSG       int
+	GSD        float64           // native meters per pixel, 0 when the item omits it
 	Assets     map[string]string // asset key -> https href
 }
 

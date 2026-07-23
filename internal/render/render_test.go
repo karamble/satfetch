@@ -84,3 +84,18 @@ func TestTrueColor(t *testing.T) {
 		t.Error("expected raster type error")
 	}
 }
+
+// RGB+NIR imagery such as NAIP carries a fourth band, which true color drops.
+func TestTrueColorDropsNIR(t *testing.T) {
+	ras := &cog.Raster{W: 2, H: 1, SPP: 4, Bits: 8, U8: []uint8{1, 2, 3, 200, 250, 251, 252, 201}}
+	img, err := TrueColor(ras)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint8{1, 2, 3, 255, 250, 251, 252, 255}
+	for i, w := range want {
+		if img.Pix[i] != w {
+			t.Errorf("pix[%d] = %d, want %d", i, img.Pix[i], w)
+		}
+	}
+}

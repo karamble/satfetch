@@ -85,6 +85,79 @@ func TestEarthSearchSearch(t *testing.T) {
 	}
 }
 
+// Aerial collections such as NAIP carry no cloud metadata, so the filter has
+// to come off or every item is excluded.
+func TestEarthSearchCollectionWithoutCloudFilter(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Error(err)
+		}
+		w.Write([]byte(`{"features":[]}`))
+	}))
+	defer ts.Close()
+
+	es := NewEarthSearch(EarthSearchOptions{
+		BaseURL: ts.URL, Collection: "naip", NoCloudFilter: true,
+	})
+	if _, err := es.Search(context.Background(), Query{
+		Lon: -122.4194, Lat: 37.7749, MaxCloud: 20, Days: 3650, Limit: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if c := gotBody["collections"].([]any); c[0] != "naip" {
+		t.Errorf("collections %v", c)
+	}
+	if q, ok := gotBody["query"]; ok && q != nil {
+		t.Errorf("cloud filter present for a collection without cloud metadata: %v", q)
+	}
+}
+
+// Get must look in the configured collection too, not the default one.
+func TestEarthSearchGetUsesCollection(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Error(err)
+		}
+		w.Write([]byte(`{"features":[]}`))
+	}))
+	defer ts.Close()
+
+	es := NewEarthSearch(EarthSearchOptions{BaseURL: ts.URL, Collection: "naip"})
+	if _, err := es.Get(context.Background(), "ca_m_3712213_se_10_060_20220518"); err == nil {
+		t.Fatal("expected ErrNoScene for an empty result")
+	}
+	if c := gotBody["collections"].([]any); c[0] != "naip" {
+		t.Errorf("collections %v", c)
+	}
+}
+
+func TestEarthSearchParsesGSD(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"features":[{"id":"x","properties":{"gsd":0.3,` +
+			`"datetime":"2023-07-07T16:00:00Z","proj:epsg":26919},` +
+			`"assets":{"image":{"href":"https://example.test/a.tif"}}}]}`))
+	}))
+	defer ts.Close()
+
+	es := NewEarthSearch(EarthSearchOptions{BaseURL: ts.URL, Collection: "naip", NoCloudFilter: true})
+	scenes, err := es.Search(context.Background(), Query{Days: 3650, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenes) != 1 {
+		t.Fatalf("scene count %d", len(scenes))
+	}
+	if scenes[0].GSD != 0.3 {
+		t.Errorf("gsd %v, want 0.3", scenes[0].GSD)
+	}
+	if scenes[0].EPSG != 26919 {
+		t.Errorf("epsg %d, want 26919", scenes[0].EPSG)
+	}
+}
+
 func TestEarthSearchHrefHook(t *testing.T) {
 	fixture := fixtureJSON(t)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
