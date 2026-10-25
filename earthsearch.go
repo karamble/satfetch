@@ -24,7 +24,7 @@ const DefaultSTACURL = "https://earth-search.aws.element84.com/v1"
 // sentinel-2-c1-l2a collection has historical gaps).
 const DefaultCollection = "sentinel-2-l2a"
 
-const defaultUserAgent = "satfetch/0.1 (+https://github.com/karamble/satfetch)"
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
 // EarthSearchOptions configures the catalog client. Zero values take
 // defaults.
